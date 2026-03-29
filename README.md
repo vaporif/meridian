@@ -22,10 +22,10 @@ graph TB
     end
 
     subgraph TUI["TUI (ratatui)"]
-        AS["Agent status"]
         OT["Objective tree"]
+        AT["Agent tree"]
         EL["Event log"]
-        HITL_UI["HITL prompts"]
+        MOD["Modal popups<br/>(HITL, rollback, help)"]
     end
 
     subgraph Tools["MCP Tools"]
@@ -118,7 +118,7 @@ Requires Rust edition 2024.
 
 ## Status
 
-Early. Core types, store, MCP server skeleton, and TUI shell exist. The actual agent spawning and checkpoint/reset loop aren't wired up yet.
+Early. Core types, store, MCP server skeleton, and an interactive TUI exist. The TUI is keyboard-driven with hotkeys, tree navigation, and modal popups for HITL responses and checkpoint rollbacks. Goals are loaded from `.md` files in a `goals/` directory. The actual agent spawning and checkpoint/reset loop aren't wired up yet.
 
 ## License
 

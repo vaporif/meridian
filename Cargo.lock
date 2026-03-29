@@ -1981,9 +1981,13 @@ dependencies = [
 name = "meridian-tui"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "crossterm",
  "meridian-core",
  "ratatui",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
 ]
