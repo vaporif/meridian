@@ -32,6 +32,7 @@
       craneLib,
     }: let
       src = craneLib.cleanCargoSource ./.;
+      onnxruntime-bin = pkgs.callPackage ./nix/onnxruntime.nix {};
 
       commonArgs = {
         inherit src;
@@ -54,14 +55,25 @@
             pkgs.apple-sdk_26
           ];
         LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+        ORT_DYLIB_PATH = "${onnxruntime-bin}/lib/libonnxruntime${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}";
       };
 
       cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
-      meridian = craneLib.buildPackage (commonArgs
+      meridianUnwrapped = craneLib.buildPackage (commonArgs
         // {
           inherit cargoArtifacts;
         });
+
+      meridian = pkgs.symlinkJoin {
+        name = "meridian";
+        paths = [meridianUnwrapped];
+        nativeBuildInputs = [pkgs.makeWrapper];
+        postBuild = ''
+          wrapProgram $out/bin/meridian \
+            --set ORT_DYLIB_PATH "${onnxruntime-bin}/lib/libonnxruntime${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}"
+        '';
+      };
 
       toolchain = fenixPkgs.stable.withComponents [
         "cargo"
@@ -106,7 +118,7 @@
           pkgs.runCommand "nix-fmt-check" {
             nativeBuildInputs = [pkgs.alejandra];
           } ''
-            alejandra --check ${self}/flake.nix
+            alejandra --check ${self}/flake.nix ${self}/nix/
             touch $out
           '';
       };
@@ -134,6 +146,7 @@
             RUST_BACKTRACE = "1";
             RUST_SRC_PATH = "${toolchain}/lib/rustlib/src/rust/library";
             LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+            ORT_DYLIB_PATH = "${onnxruntime-bin}/lib/libonnxruntime${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}";
           }
           // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [pkgs.openssl];
