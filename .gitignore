@@ -23,6 +23,8 @@ target
 # Nix artifact
 result
 
+goals
+
 .envrc
 
 # Compiled WASM artifacts
@@ -31,3 +33,5 @@ result
 .fastembed_cache
 meridian-embedding
 meridian.db
+meridian.db*
+.mcp.json
