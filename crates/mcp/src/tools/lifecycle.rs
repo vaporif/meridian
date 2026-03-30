@@ -159,7 +159,11 @@ where
         params: Self::Parameter,
     ) -> Result<Self::Output, Self::Error> {
         let agent_id = parse_agent_id(&params.agent_id)?;
-        let directive = service.store.get_directive(agent_id).await.map_err(meridian_err)?;
+        let directive = service
+            .store
+            .get_directive(agent_id)
+            .await
+            .map_err(meridian_err)?;
 
         let reason = match directive {
             Directive::PrepareReset => Some("token threshold reached".to_owned()),
@@ -174,7 +178,11 @@ where
             .and_then(|a| a.injected_message.clone());
 
         if injected_message.is_some() {
-            service.store.set_injected_message(agent_id, None).await.map_err(meridian_err)?;
+            service
+                .store
+                .set_injected_message(agent_id, None)
+                .await
+                .map_err(meridian_err)?;
         }
 
         Ok(GetDirectiveOutput {

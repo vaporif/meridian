@@ -45,7 +45,10 @@ impl Orchestrator {
                     objective_id,
                     content,
                     dir,
-                } => self.spawn(objective_id, content, dir, None).await.map(|_| ()),
+                } => self
+                    .spawn(objective_id, content, dir, None)
+                    .await
+                    .map(|_| ()),
                 OrchestratorCommand::Kill { agent_id } => {
                     self.dispatch(agent_id, AgentCommand::Kill).await
                 }
@@ -119,11 +122,7 @@ impl Orchestrator {
         Ok(agent_id)
     }
 
-    async fn dispatch(
-        &mut self,
-        agent_id: AgentId,
-        cmd: AgentCommand,
-    ) -> color_eyre::Result<()> {
+    async fn dispatch(&mut self, agent_id: AgentId, cmd: AgentCommand) -> color_eyre::Result<()> {
         let agent = self
             .agents
             .get_mut(&agent_id)

@@ -72,11 +72,17 @@ where
         service: &MeridianMcpServer<S, E>,
         params: Self::Parameter,
     ) -> Result<Self::Output, Self::Error> {
-        let embedding = service.embedder.embed(&params.query).await.map_err(|e| {
-            ErrorData::internal_error(format!("embedding failed: {e}"), None)
-        })?;
+        let embedding = service
+            .embedder
+            .embed(&params.query)
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("embedding failed: {e}"), None))?;
 
-        let search_results = service.store.search(&embedding, params.limit).await.map_err(meridian_err)?;
+        let search_results = service
+            .store
+            .search(&embedding, params.limit)
+            .await
+            .map_err(meridian_err)?;
 
         let mut results = Vec::with_capacity(search_results.len());
         for sr in search_results {
@@ -174,7 +180,11 @@ where
 
         let entry_id = service.store.store(entry).await.map_err(meridian_err)?;
 
-        let similar = service.store.find_similar(&embedding, 0.8).await.map_err(meridian_err)?;
+        let similar = service
+            .store
+            .find_similar(&embedding, 0.8)
+            .await
+            .map_err(meridian_err)?;
         let links: Vec<Link> = similar
             .into_iter()
             .filter(|(id, _)| *id != entry_id)
@@ -184,7 +194,11 @@ where
             })
             .collect();
         if !links.is_empty() {
-            service.store.update_links(entry_id, links).await.map_err(meridian_err)?;
+            service
+                .store
+                .update_links(entry_id, links)
+                .await
+                .map_err(meridian_err)?;
         }
 
         Ok(StoreMemoryOutput {

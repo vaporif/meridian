@@ -923,10 +923,7 @@ impl App {
                 self.event_log
                     .push(format!("[{agent_id}] session ready — Enter to attach"));
             }
-            BusEvent::CheckpointSaved {
-                agent_id,
-                version,
-            } => {
+            BusEvent::CheckpointSaved { agent_id, version } => {
                 self.event_log
                     .push(format!("[{agent_id}] checkpoint saved: {version}"));
             }

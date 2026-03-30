@@ -60,7 +60,11 @@ where
     ) -> Result<Self::Output, Self::Error> {
         let root_id = parse_objective_id(&params.root_id)?;
 
-        let tree = service.store.get_tree(root_id).await.map_err(meridian_err)?;
+        let tree = service
+            .store
+            .get_tree(root_id)
+            .await
+            .map_err(meridian_err)?;
         let tree_json = serde_json::to_string(&tree)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
@@ -116,15 +120,21 @@ where
     ) -> Result<Self::Output, Self::Error> {
         let objective_id = parse_objective_id(&params.objective_id)?;
 
-        let status: ObjectiveStatus = params
-            .status
-            .parse()
-            .map_err(|_| ErrorData::invalid_params(
-                format!("invalid status: '{}' (expected: pending, in_progress, done, blocked)", params.status),
+        let status: ObjectiveStatus = params.status.parse().map_err(|_| {
+            ErrorData::invalid_params(
+                format!(
+                    "invalid status: '{}' (expected: pending, in_progress, done, blocked)",
+                    params.status
+                ),
                 None,
-            ))?;
+            )
+        })?;
 
-        service.store.update_status(objective_id, status).await.map_err(meridian_err)?;
+        service
+            .store
+            .update_status(objective_id, status)
+            .await
+            .map_err(meridian_err)?;
 
         let _ = service.event_tx.send(BusEvent::ObjectiveUpdated {
             objective_id,

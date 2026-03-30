@@ -60,7 +60,12 @@ where
         params: Self::Parameter,
     ) -> Result<Self::Output, Self::Error> {
         let agent_id = parse_agent_id(&params.agent_id)?;
-        match service.store.get_latest(agent_id).await.map_err(meridian_err)? {
+        match service
+            .store
+            .get_latest(agent_id)
+            .await
+            .map_err(meridian_err)?
+        {
             Some(cp) => {
                 let json = serde_json::to_string(&cp)
                     .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
@@ -147,21 +152,26 @@ where
             None => vec![],
         };
 
-        let versions = service.store.list_versions(agent_id).await.map_err(meridian_err)?;
+        let versions = service
+            .store
+            .list_versions(agent_id)
+            .await
+            .map_err(meridian_err)?;
         let version = versions
             .iter()
             .max()
             .map(|v| v.next())
             .unwrap_or(CheckpointVersion(1));
 
-        let l2_embeddings = if l2_chunks.is_empty() {
-            vec![]
-        } else {
-            let texts: Vec<&str> = l2_chunks.iter().map(|c| c.content.as_str()).collect();
-            service.embedder.embed_batch(&texts).await.map_err(|e| {
-                ErrorData::internal_error(format!("embedding failed: {e}"), None)
-            })?
-        };
+        let l2_embeddings =
+            if l2_chunks.is_empty() {
+                vec![]
+            } else {
+                let texts: Vec<&str> = l2_chunks.iter().map(|c| c.content.as_str()).collect();
+                service.embedder.embed_batch(&texts).await.map_err(|e| {
+                    ErrorData::internal_error(format!("embedding failed: {e}"), None)
+                })?
+            };
 
         CheckpointStore::save(
             service.store.as_ref(),
@@ -175,10 +185,9 @@ where
         .await
         .map_err(meridian_err)?;
 
-        let _ = service.event_tx.send(BusEvent::CheckpointSaved {
-            agent_id,
-            version,
-        });
+        let _ = service
+            .event_tx
+            .send(BusEvent::CheckpointSaved { agent_id, version });
 
         Ok(SerializeAndPersistOutput {
             success: true,
