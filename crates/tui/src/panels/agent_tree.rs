@@ -205,11 +205,7 @@ impl StatefulWidget for AgentTreeWidget {
             .map(|(i, item)| {
                 let indent = "  ".repeat(item.depth);
                 let arrow = if item.has_children {
-                    if item.is_expanded {
-                        "v "
-                    } else {
-                        "> "
-                    }
+                    if item.is_expanded { "v " } else { "> " }
                 } else {
                     "  "
                 };
@@ -249,7 +245,6 @@ impl StatefulWidget for AgentTreeWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
     use meridian_core::agent::AgentState;
     use meridian_core::id::{AgentId, ObjectiveId};
     use std::path::PathBuf;

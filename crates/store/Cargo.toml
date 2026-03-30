@@ -2,6 +2,7 @@
 name = "meridian-store"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 meridian-core = { workspace = true, features = ["rusqlite"] }

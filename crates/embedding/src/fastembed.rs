@@ -11,9 +11,8 @@ pub struct FastEmbedder {
 
 impl FastEmbedder {
     pub fn new(model_name: &str) -> Result<Self> {
-        let embedding_model: EmbeddingModel = model_name
-            .parse()
-            .map_err(MeridianError::Embedding)?;
+        let embedding_model: EmbeddingModel =
+            model_name.parse().map_err(MeridianError::Embedding)?;
 
         let model_info = TextEmbedding::get_model_info(&embedding_model)
             .map_err(|e| MeridianError::Embedding(e.to_string()))?;
@@ -29,7 +28,7 @@ impl FastEmbedder {
     }
 
     pub fn with_default() -> Result<Self> {
-        Self::new("Xenova/bge-small-en-v1.5")
+        Self::new("BGESmallENV15")
     }
 }
 
@@ -38,7 +37,7 @@ impl EmbeddingProvider for FastEmbedder {
         let model = self.model.clone();
         let text = text.to_owned();
         let mut results = tokio::task::spawn_blocking(move || {
-            let model = model.lock().expect("embedding mutex poisoned");
+            let mut model = model.lock().expect("embedding mutex poisoned");
             model
                 .embed(vec![text], None)
                 .map_err(|e| MeridianError::Embedding(e.to_string()))
@@ -55,7 +54,7 @@ impl EmbeddingProvider for FastEmbedder {
         let model = self.model.clone();
         let texts: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
         tokio::task::spawn_blocking(move || {
-            let model = model.lock().expect("embedding mutex poisoned");
+            let mut model = model.lock().expect("embedding mutex poisoned");
             model
                 .embed(texts, None)
                 .map_err(|e| MeridianError::Embedding(e.to_string()))

@@ -63,6 +63,8 @@
       meridianUnwrapped = craneLib.buildPackage (commonArgs
         // {
           inherit cargoArtifacts;
+          # Embedding tests need network (HuggingFace model download)
+          cargoTestExtraArgs = "--workspace --exclude meridian-embedding";
         });
 
       meridian = pkgs.symlinkJoin {
@@ -129,6 +131,7 @@
             toolchain
             pkgs.cargo-nextest
             pkgs.cargo-llvm-cov
+            pkgs.cargo-deny
             pkgs.taplo
             pkgs.typos
             pkgs.llvmPackages.clang
@@ -149,7 +152,7 @@
             ORT_DYLIB_PATH = "${onnxruntime-bin}/lib/libonnxruntime${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}";
           }
           // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
-            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [pkgs.openssl];
+            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [pkgs.openssl pkgs.stdenv.cc.cc.lib];
           };
       };
     });
