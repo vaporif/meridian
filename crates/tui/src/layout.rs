@@ -5,7 +5,7 @@ pub fn focused_border_style(focused: bool) -> Style {
     if focused {
         Style::default().fg(Color::Cyan)
     } else {
-        Style::default()
+        Style::default().fg(Color::DarkGray)
     }
 }
 
@@ -17,13 +17,22 @@ pub struct AppLayout {
 }
 
 impl AppLayout {
-    pub fn compute(area: Rect) -> Self {
-        let vertical = Layout::vertical([
-            Constraint::Min(10),
-            Constraint::Length(15),
-            Constraint::Length(2),
-        ])
-        .split(area);
+    pub fn compute_with_focus(area: Rect, event_log_focused: bool) -> Self {
+        let vertical = if event_log_focused {
+            Layout::vertical([
+                Constraint::Length(5),
+                Constraint::Min(10),
+                Constraint::Length(2),
+            ])
+            .split(area)
+        } else {
+            Layout::vertical([
+                Constraint::Min(10),
+                Constraint::Length(15),
+                Constraint::Length(2),
+            ])
+            .split(area)
+        };
 
         let top_area = vertical[0];
         let event_log = vertical[1];

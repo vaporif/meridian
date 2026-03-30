@@ -6,6 +6,8 @@ use ratatui::{
     widgets::{Paragraph, Widget},
 };
 
+use crate::input::FocusPanel;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HotkeyContext {
     Nothing,
@@ -25,7 +27,7 @@ pub fn context_line(ctx: &HotkeyContext) -> &'static str {
         HotkeyContext::ObjectiveSelectedWithAgent => {
             "K:Kill  P:Pause  R:Rollback  Enter:HITL  E:Edit  V:View"
         }
-        HotkeyContext::AgentSelected => "K:Kill  P:Pause  R:Rollback",
+        HotkeyContext::AgentSelected => "Enter:Attach  K:Kill  P:Pause  R:Rollback",
         HotkeyContext::AgentSelectedHitlPending => {
             "Enter:Respond to question  K:Kill  P:Pause  R:Rollback"
         }
@@ -36,6 +38,7 @@ pub fn context_line(ctx: &HotkeyContext) -> &'static str {
 pub struct HotkeyBarWidget {
     pub context: HotkeyContext,
     pub hitl_hint: Option<String>,
+    pub focus: FocusPanel,
 }
 
 impl Widget for HotkeyBarWidget {
@@ -44,21 +47,52 @@ impl Widget for HotkeyBarWidget {
             return;
         }
 
-        let key_style = Style::default()
-            .fg(Color::Cyan)
+        let active_style = Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
             .add_modifier(Modifier::BOLD);
+        let inactive_style = Style::default().fg(Color::DarkGray);
         let sep_style = Style::default().fg(Color::DarkGray);
 
-        let line1 = Line::from(vec![
-            Span::styled("Tab", key_style),
-            Span::styled(":Focus  ", sep_style),
-            Span::styled("N", key_style),
-            Span::styled(":New  ", sep_style),
-            Span::styled("?", key_style),
-            Span::styled(":Help  ", sep_style),
-            Span::styled("Q", key_style),
+        let tab = |label: &'static str, panel: FocusPanel| -> Span<'static> {
+            if self.focus == panel {
+                Span::styled(format!(" {label} "), active_style)
+            } else {
+                Span::styled(format!(" {label} "), inactive_style)
+            }
+        };
+
+        let spans = vec![
+            tab("Objectives", FocusPanel::ObjectiveTree),
+            Span::styled(" | ", sep_style),
+            tab("Agents", FocusPanel::AgentTree),
+            Span::styled(" | ", sep_style),
+            tab("Event Log", FocusPanel::EventLog),
+            Span::styled("    ", sep_style),
+            Span::styled(
+                "N",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(":New ", sep_style),
+            Span::styled(
+                "?",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(":Help ", sep_style),
+            Span::styled(
+                "Q",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(":Quit", sep_style),
-        ]);
+        ];
+
+        let line1 = Line::from(spans);
 
         let ctx_text = self
             .hitl_hint

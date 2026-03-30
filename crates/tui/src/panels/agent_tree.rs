@@ -8,6 +8,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, StatefulWidget, Widget},
 };
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::layout::focused_border_style;
 
@@ -30,6 +31,9 @@ pub struct AgentTreeNode {
     pub tokens_remaining: Option<u64>,
     pub checkpoint_version: Option<CheckpointVersion>,
     pub hitl_pending: bool,
+    pub session_id: Option<String>,
+    pub directory: Option<PathBuf>,
+    pub has_session: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +130,9 @@ pub fn build_agent_trees(
                 tokens_remaining: None,
                 checkpoint_version: rec.checkpoint_version,
                 hitl_pending: false,
+                session_id: None,
+                directory: Some(rec.directory.clone()),
+                has_session: false,
             },
             children: Vec::new(),
             expanded: true,
@@ -207,9 +214,10 @@ impl StatefulWidget for AgentTreeWidget {
                 };
                 let hitl_mark = if item.data.hitl_pending { "[?] " } else { "" };
                 let color = state_color(&item.data.state);
+                let short_id = &item.data.id.to_string()[..8];
                 let text = format!(
-                    "{indent}{arrow}{hitl_mark}{} ({})",
-                    item.data.id, item.data.state
+                    "{indent}{arrow}{hitl_mark}{short_id} {} ({})",
+                    item.data.objective_label, item.data.state
                 );
 
                 let style = if i == state.cursor {
@@ -249,6 +257,9 @@ mod tests {
             tokens_remaining: None,
             checkpoint_version: None,
             hitl_pending: hitl,
+            session_id: None,
+            directory: None,
+            has_session: false,
         }
     }
 

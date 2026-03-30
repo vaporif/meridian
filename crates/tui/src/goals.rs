@@ -168,10 +168,10 @@ pub(crate) fn reconcile_with_mapping(goals_dir: &Path, goals: &mut [GoalObjectiv
         }
     }
 
-    if changed {
-        if let Err(e) = save_mapping(goals_dir, &mapping) {
-            tracing::warn!("Failed to save goals mapping: {e}");
-        }
+    if changed
+        && let Err(e) = save_mapping(goals_dir, &mapping)
+    {
+        tracing::warn!("Failed to save goals mapping: {e}");
     }
 }
 

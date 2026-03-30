@@ -246,7 +246,7 @@ impl Modal {
                     Line::from("  r                Rollback to checkpoint"),
                     Line::from("  n                New objective"),
                     Line::from("  D                Toggle debug log"),
-                    Line::from("  Enter            Respond to HITL question"),
+                    Line::from("  Enter            Attach to agent / HITL respond"),
                     Line::from("  ?                Toggle help"),
                     Line::from("  q / Ctrl+C       Quit"),
                     Line::from(""),

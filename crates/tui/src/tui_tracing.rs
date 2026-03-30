@@ -13,6 +13,14 @@ pub struct TuiLogBuffer {
     inner: Arc<Mutex<VecDeque<String>>>,
 }
 
+impl Default for TuiLogBuffer {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_ENTRIES))),
+        }
+    }
+}
+
 impl TuiLogBuffer {
     pub fn new() -> Self {
         Self {

@@ -53,5 +53,10 @@ pub enum BusEvent {
         agent_id: AgentId,
         versions: Vec<crate::checkpoint::CheckpointSummary>,
     },
+    AgentSessionReady {
+        agent_id: AgentId,
+        session_id: String,
+        directory: std::path::PathBuf,
+    },
     Shutdown,
 }

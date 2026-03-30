@@ -109,7 +109,7 @@ impl App {
     }
 
     fn draw(&mut self, frame: &mut Frame) {
-        let layout = AppLayout::compute(frame.area());
+        let layout = AppLayout::compute_with_focus(frame.area(), self.focus == FocusPanel::EventLog);
 
         frame.render_stateful_widget(
             ObjectiveTreeWidget {
@@ -140,6 +140,7 @@ impl App {
         let hotkey_widget = HotkeyBarWidget {
             context: ctx,
             hitl_hint,
+            focus: self.focus,
         };
         frame.render_widget(hotkey_widget, layout.hotkey_bar);
 
@@ -724,18 +725,19 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                let hitl_data = self
-                    .agent_tree
-                    .selected()
-                    .and_then(|item| {
-                        if item.data.hitl_pending {
-                            Some(item.data.id)
-                        } else {
-                            None
-                        }
-                    });
-                if let Some(aid) = hitl_data {
-                    self.try_open_hitl_modal(aid);
+                if let Some(item) = self.agent_tree.selected() {
+                    if item.data.hitl_pending {
+                        self.try_open_hitl_modal(item.data.id);
+                    } else if let (Some(sid), Some(dir)) =
+                        (&item.data.session_id, &item.data.directory)
+                    {
+                        let aid = item.data.id;
+                        let first = !item.data.has_session;
+                        self.attach_agent_session(aid, sid.clone(), dir.clone(), first);
+                    } else {
+                        self.event_log
+                            .push("Agent has no session to attach to".into());
+                    }
                 }
             }
             _ => {}
@@ -758,6 +760,54 @@ impl App {
             .iter_mut()
             .find(|i| i.data.id == *agent_id)
             .map(|i| &mut i.data)
+    }
+
+    fn attach_agent_session(&mut self, agent_id: AgentId, session_id: String, directory: PathBuf, first_time: bool) {
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::terminal::LeaveAlternateScreen
+        );
+
+        let mut cmd = std::process::Command::new("claude");
+        if first_time {
+            cmd.arg("--session-id").arg(&session_id);
+        } else {
+            cmd.arg("--resume").arg(&session_id);
+        }
+        cmd.arg("--permission-mode")
+            .arg("bypassPermissions")
+            .arg("--settings")
+            .arg(r#"{"skipDangerousModePermissionPrompt": true}"#)
+            .current_dir(&directory);
+
+        let result = cmd.status();
+
+        crossterm::terminal::enable_raw_mode().ok();
+        crossterm::execute!(
+            std::io::stdout(),
+            crossterm::terminal::EnterAlternateScreen
+        )
+        .ok();
+        self.needs_clear = true;
+
+        // Mark session as created after first attach
+        if first_time {
+            if let Some(agent) = self.find_agent_mut(&agent_id) {
+                agent.has_session = true;
+            }
+        }
+
+        match result {
+            Ok(status) => {
+                self.event_log
+                    .push(format!("Claude session exited: {status}"));
+            }
+            Err(e) => {
+                self.event_log
+                    .push(format!("Failed to attach: {e}"));
+            }
+        }
     }
 
     fn try_open_hitl_modal(&mut self, agent_id: AgentId) {
@@ -796,6 +846,32 @@ impl App {
             } => {
                 if let Some(agent) = self.find_agent_mut(agent_id) {
                     agent.state = *new_state;
+                } else {
+                    let label = self
+                        .goals
+                        .iter()
+                        .find(|g| g.agent_id == Some(*agent_id))
+                        .map(|g| g.title.clone())
+                        .unwrap_or_else(|| agent_id.to_string());
+                    self.agent_tree.items.push(
+                        crate::panels::agent_tree::FlatTreeItem {
+                            data: crate::panels::agent_tree::AgentTreeNode {
+                                id: *agent_id,
+                                state: *new_state,
+                                objective_label: label,
+                                tokens_used: None,
+                                tokens_remaining: None,
+                                checkpoint_version: None,
+                                hitl_pending: false,
+                                session_id: None,
+                                directory: None,
+                                has_session: false,
+                            },
+                            depth: 0,
+                            is_expanded: true,
+                            has_children: false,
+                        },
+                    );
                 }
                 self.event_log
                     .push(format!("[{agent_id}] state -> {new_state}"));
@@ -853,6 +929,18 @@ impl App {
                         };
                     }
                 }
+            }
+            BusEvent::AgentSessionReady {
+                agent_id,
+                session_id,
+                directory,
+            } => {
+                if let Some(agent) = self.find_agent_mut(agent_id) {
+                    agent.session_id = Some(session_id.clone());
+                    agent.directory = Some(directory.clone());
+                }
+                self.event_log
+                    .push(format!("[{agent_id}] session ready — Enter to attach"));
             }
             BusEvent::Shutdown => {
                 self.event_log.push("Shutdown signal received".into());
