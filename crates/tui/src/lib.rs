@@ -782,10 +782,8 @@ impl App {
         self.needs_clear = true;
 
         // Mark session as created after first attach
-        if first_time {
-            if let Some(agent) = self.find_agent_mut(&agent_id) {
-                agent.has_session = true;
-            }
+        if first_time && let Some(agent) = self.find_agent_mut(&agent_id) {
+            agent.has_session = true;
         }
 
         match result {

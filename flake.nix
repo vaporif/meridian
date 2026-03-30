@@ -60,7 +60,7 @@
           ORT_LIB_LOCATION = "${onnxruntime-bin}/lib";
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
-          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [onnxruntime-bin];
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [onnxruntime-bin pkgs.openssl];
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
           DYLD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [onnxruntime-bin];
