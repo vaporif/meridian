@@ -245,7 +245,6 @@ impl StatefulWidget for AgentTreeWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
     use meridian_core::agent::AgentState;
     use meridian_core::id::{AgentId, ObjectiveId};
     use std::path::PathBuf;
