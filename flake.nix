@@ -34,30 +34,37 @@
       src = craneLib.cleanCargoSource ./.;
       onnxruntime-bin = pkgs.callPackage ./nix/onnxruntime.nix {};
 
-      commonArgs = {
-        inherit src;
-        pname = "meridian";
-        strictDeps = true;
-        nativeBuildInputs =
-          [
-            pkgs.pkg-config
-            pkgs.llvmPackages.clang
-          ]
-          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
-            pkgs.openssl
-          ];
-        buildInputs =
-          pkgs.lib.optionals pkgs.stdenv.isLinux [
-            pkgs.openssl
-          ]
-          ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
-            pkgs.libiconv
-            pkgs.apple-sdk_26
-          ];
-        LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-        ORT_DYLIB_PATH = "${onnxruntime-bin}/lib/libonnxruntime${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}";
-        ORT_LIB_LOCATION = "${onnxruntime-bin}/lib";
-      };
+      commonArgs =
+        {
+          inherit src;
+          pname = "meridian";
+          strictDeps = true;
+          nativeBuildInputs =
+            [
+              pkgs.pkg-config
+              pkgs.llvmPackages.clang
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+              pkgs.openssl
+            ];
+          buildInputs =
+            pkgs.lib.optionals pkgs.stdenv.isLinux [
+              pkgs.openssl
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+              pkgs.libiconv
+              pkgs.apple-sdk_26
+            ];
+          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+          ORT_DYLIB_PATH = "${onnxruntime-bin}/lib/libonnxruntime${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}";
+          ORT_LIB_LOCATION = "${onnxruntime-bin}/lib";
+        }
+        // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [onnxruntime-bin];
+        }
+        // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
+          DYLD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [onnxruntime-bin];
+        };
 
       cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
@@ -151,7 +158,7 @@
             ORT_LIB_LOCATION = "${onnxruntime-bin}/lib";
           }
           // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
-            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [pkgs.openssl pkgs.stdenv.cc.cc.lib];
+            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [pkgs.openssl pkgs.stdenv.cc.cc.lib onnxruntime-bin];
           };
       };
     });
