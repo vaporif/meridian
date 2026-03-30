@@ -10,7 +10,7 @@ use ratatui::{
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::layout::focused_border_style;
+use crate::layout::{focused_border_style, focused_border_type};
 
 fn state_color(state: &AgentState) -> Color {
     match state {
@@ -182,6 +182,7 @@ impl StatefulWidget for AgentTreeWidget {
         let block = Block::default()
             .title(" Agents ")
             .borders(Borders::ALL)
+            .border_type(focused_border_type(self.focused))
             .border_style(focused_border_style(self.focused));
 
         let inner = block.inner(area);
@@ -220,7 +221,12 @@ impl StatefulWidget for AgentTreeWidget {
                     item.data.objective_label, item.data.state
                 );
 
-                let style = if i == state.cursor {
+                let style = if i == state.cursor && self.focused {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(color)
+                        .add_modifier(Modifier::BOLD)
+                } else if i == state.cursor {
                     Style::default().fg(color).add_modifier(Modifier::REVERSED)
                 } else {
                     Style::default().fg(color)

@@ -7,7 +7,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, StatefulWidget, Widget},
 };
 
-use crate::layout::focused_border_style;
+use crate::layout::{focused_border_style, focused_border_type};
 
 const DEFAULT_MAX_LINES: usize = 1000;
 
@@ -75,6 +75,7 @@ impl StatefulWidget for EventLogWidget {
         let block = Block::default()
             .title(" Event Log ")
             .borders(Borders::ALL)
+            .border_type(focused_border_type(self.focused))
             .border_style(focused_border_style(self.focused));
 
         let inner = block.inner(area);

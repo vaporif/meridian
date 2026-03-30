@@ -8,7 +8,7 @@ use ratatui::{
 };
 
 use crate::goals::{GoalObjective, GoalSubObjective, ObjectiveItem};
-use crate::layout::focused_border_style;
+use crate::layout::{focused_border_style, focused_border_type};
 use crate::panels::agent_tree::{FlatTreeItem, TreePanelState};
 
 fn status_icon(status: &ObjectiveStatus) -> &'static str {
@@ -129,6 +129,7 @@ impl StatefulWidget for ObjectiveTreeWidget {
         let block = Block::default()
             .title(" Objectives ")
             .borders(Borders::ALL)
+            .border_type(focused_border_type(self.focused))
             .border_style(focused_border_style(self.focused));
 
         let inner = block.inner(area);
@@ -190,7 +191,14 @@ impl StatefulWidget for ObjectiveTreeWidget {
                 }
 
                 let mut line = Line::from(spans);
-                if i == state.panel.cursor {
+                if i == state.panel.cursor && self.focused {
+                    line = line.style(
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    );
+                } else if i == state.panel.cursor {
                     line = line.style(Style::default().add_modifier(Modifier::REVERSED));
                 }
                 line
