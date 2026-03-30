@@ -84,17 +84,16 @@ where
             {
                 tracing::warn!(%agent_id, %e, "failed to send token threshold abort command");
             }
-        } else if pct >= service.config.lifecycle.context_threshold_pct {
-            if let Err(e) = service
+        } else if pct >= service.config.lifecycle.context_threshold_pct
+            && let Err(e) = service
                 .cmd_tx
                 .send(OrchestratorCommand::TokenThreshold {
                     agent_id,
                     directive: Directive::PrepareReset,
                 })
                 .await
-            {
-                tracing::warn!(%agent_id, %e, "failed to send token threshold reset command");
-            }
+        {
+            tracing::warn!(%agent_id, %e, "failed to send token threshold reset command");
         }
 
         let _ = service.event_tx.send(BusEvent::TokenReport {
