@@ -11,7 +11,7 @@ LLM agents accumulate state in their context window. Around 100-150k tokens, the
 
 ## What Nephila does
 
-Think of the LLM as a stateless process. When its "RAM" (context window) fills up, Nephila checkpoints to "disk" (SQLite + vector search), kills the process, and starts a fresh one that loads the checkpoint. The agent reasons. Nephila manages the lifecycle.
+Think of the LLM as a stateless process. When its "RAM" (context window) fills up, Nephila checkpoints to "disk" (SQLite + [ferrex](https://github.com/vaporif/ferrex)), kills the process, and starts a fresh one that loads the checkpoint. The agent reasons. Nephila manages the lifecycle.
 
 ```mermaid
 graph TB
@@ -48,7 +48,8 @@ graph TB
         AN["Claude #N<br/><i>fresh context</i><br/>Read, Write, Bash, Git"]
     end
 
-    DB[("SQLite + sqlite-vec<br/>Checkpoints | Memories<br/>Objectives | Events")]
+    DB[("SQLite<br/>Checkpoints | Objectives<br/>Events")]
+    FX["ferrex<br/><i>MCP memory server</i><br/>Qdrant + embeddings<br/>hybrid search + rerank"]
 
     EB <--> TUI
     MCP --- Tools
@@ -59,6 +60,7 @@ graph TB
     LM -- "spawn / kill" --> A2
     LM -- "spawn / kill" --> AN
     MCP <--> DB
+    MCP -- "MCP stdio" --> FX
 ```
 
 ## How the lifecycle works
@@ -72,7 +74,7 @@ graph TB
    - **L1** - session summary (~2-5k tokens, always restored)
    - **L2** - detailed findings (retrieved on demand via semantic search)
 6. Nephila kills the agent, spawns a fresh one with L0+L1 pre-loaded
-7. New agent pulls L2 memories as needed through vector search
+7. New agent pulls L2 memories as needed through [ferrex](https://github.com/vaporif/ferrex) (hybrid vector search + reranking)
 
 If the agent crashes or ignores instructions, Nephila force-kills at 85% and uses a heuristic crash summarizer instead.
 
@@ -84,7 +86,7 @@ Claude keeps its own tools (filesystem, bash, git). Nephila is a sidecar that on
 
 All agents are owned flat by Nephila, not in parent-child trees. When a parent agent resets, it loses all memory of its children. Hierarchies just break. The Kubernetes model works better here - control plane owns everything, logical groupings are metadata.
 
-SQLite with sqlite-vec is the default store. One `.db` file, ACID transactions for atomic checkpoints, no extra infrastructure. There's a `MemoryStore` trait so you can swap in Qdrant when you outgrow it.
+SQLite handles orchestration state -- agents, checkpoints, objectives, interrupts, events, tracing. All memory and RAG is being migrated to [ferrex](https://github.com/vaporif/ferrex), a local-first MCP memory server extracted from this repo. Ferrex replaces the in-process sqlite-vec memory/search with Qdrant-backed hybrid search (dense + BM25 with RRF fusion), cross-encoder reranking, entity resolution, typed memories, and temporal staleness scoring. This migration is not yet complete -- the sqlite-vec memory tables and `embedding` crate still exist in the codebase and will be removed once ferrex integration is wired up.
 
 Communication happens over streamable HTTP, not stdio. Stdio has a direction problem - the client spawns the server, but Nephila needs to be the long-lived process that spawns agents, not the other way around.
 
@@ -121,9 +123,9 @@ Requires Rust edition 2024.
 
 ## Status
 
-MVP-1 is mostly wired up. Core domain types, SQLite persistence (with sqlite-vec), all 13 MCP tools, the lifecycle manager, and TUI are implemented. The MCP server runs over streamable HTTP via Axum. Agent spawning, token threshold detection, checkpoint save/restore, and HITL are functional. The TUI is keyboard-driven with hotkeys, tree navigation, and modal popups. Goals load from files in a `goals/` directory.
+MVP-1 is mostly wired up. Core domain types, SQLite persistence, all 13 MCP tools, the lifecycle manager, and TUI are implemented. The MCP server runs over streamable HTTP via Axum. Agent spawning, token threshold detection, checkpoint save/restore, and HITL are functional. The TUI is keyboard-driven with hotkeys, tree navigation, and modal popups. Goals load from files in a `goals/` directory.
 
-What's left: end-to-end integration test for the full checkpoint/reset loop, crash summarizer implementation. + connection to ferrex (extracted RAG)
+What's left: end-to-end integration test for the full checkpoint/reset loop, crash summarizer implementation, ferrex integration (replace sqlite-vec memory/search and `embedding` crate with ferrex MCP calls, remove `MemoryStore` trait).
 
 ## License
 
