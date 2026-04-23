@@ -16,6 +16,23 @@ use nephila_mcp::state::HitlRequest;
 use nephila_store::SqliteStore;
 use tokio::sync::{RwLock, broadcast, mpsc};
 
+const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../../config/agent_system_prompt.md");
+
+fn compose_prompt(
+    template: &str,
+    agent_id: AgentId,
+    objective_id: ObjectiveId,
+    mcp_endpoint: &str,
+    objective_content: &str,
+) -> String {
+    let protocol = template
+        .replace("{{agent_id}}", &agent_id.to_string())
+        .replace("{{objective_id}}", &objective_id.to_string())
+        .replace("{{mcp_endpoint}}", mcp_endpoint);
+
+    format!("{protocol}\n\n---\n\n# Your Task\n\n{objective_content}")
+}
+
 pub struct Orchestrator {
     agents: HashMap<AgentId, Agent>,
     connectors: HashMap<AgentId, TaskConnectorKind>,
@@ -216,18 +233,23 @@ impl Orchestrator {
             request_config: None,
         };
 
+        let prompt = compose_prompt(
+            SYSTEM_PROMPT_TEMPLATE,
+            agent_id,
+            objective_id,
+            &self.mcp_endpoint,
+            &content,
+        );
+
         let (task_handle, process_handle) = connector
-            .spawn(agent_id, &spawn_config, &content, &session_id)
+            .spawn(agent_id, &spawn_config, &prompt, &session_id)
             .await
             .map_err(|e| color_eyre::eyre::eyre!("spawn failed: {e}"))?;
-
-        let _ = task_handle;
 
         self.connectors
             .insert(agent_id, TaskConnectorKind::ClaudeCode(connector));
         self.process_handles.insert(agent_id, process_handle.clone());
 
-        // Spawn watcher task
         let cmd_tx = self.cmd_tx.clone();
         let watcher_handle = process_handle;
         tokio::spawn(async move {
@@ -241,7 +263,6 @@ impl Orchestrator {
                 .await;
         });
 
-        // Track child in parent's children list
         if let Some(parent_id) = spawned_by
             && let Some(parent) = self.agents.get_mut(&parent_id)
         {
@@ -429,6 +450,23 @@ mod tests {
         assert_eq!(orch.agent_depth(AgentId::new()), 0);
     }
 
+    #[test]
+    fn compose_prompt_interpolates_placeholders() {
+        let agent_id = AgentId::new();
+        let objective_id = ObjectiveId::new();
+        let result = compose_prompt(
+            "Agent {{agent_id}} on {{objective_id}} at {{mcp_endpoint}}",
+            agent_id,
+            objective_id,
+            "http://localhost:8080/mcp",
+            "do the thing",
+        );
+        assert!(result.contains(&agent_id.to_string()));
+        assert!(result.contains(&objective_id.to_string()));
+        assert!(result.contains("http://localhost:8080/mcp"));
+        assert!(result.contains("do the thing"));
+    }
+
     #[tokio::test]
     async fn agent_exited_from_suspending_transitions_to_exited() {
         let agent_id = AgentId::new();
@@ -443,9 +481,10 @@ mod tests {
         assert_eq!(agent.state, AgentState::Suspending);
 
         let mut agents = HashMap::new();
-        agents.insert(agent_id, agent);
+        agents.insert(agent_id, agent.clone());
 
         let mut orch = test_orchestrator(agents);
+        orch.store.register(agent).await.unwrap();
 
         let result = orch.handle_agent_exited(agent_id, true).await;
         assert!(result.is_ok());

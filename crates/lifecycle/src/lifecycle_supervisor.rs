@@ -191,6 +191,39 @@ mod tests {
         }
     }
 
+    async fn register_agent_with_checkpoint(
+        store: &SqliteStore,
+        agent_id: AgentId,
+        objective_id: ObjectiveId,
+        dir: &std::path::Path,
+        msg: Option<&str>,
+    ) -> CheckpointId {
+        let agent = nephila_core::agent::Agent::new(
+            agent_id,
+            objective_id,
+            dir.to_path_buf(),
+            nephila_core::agent::SpawnOrigin::Operator,
+            msg.map(String::from),
+        );
+        store.register(agent).await.unwrap();
+
+        let cp_id = CheckpointId::new();
+        let node = CheckpointNode {
+            id: cp_id,
+            agent_id,
+            parent_id: None,
+            branch_label: None,
+            channels: BTreeMap::new(),
+            l2_namespace: "test".into(),
+            interrupt: None,
+            created_at: chrono::Utc::now(),
+        };
+        store.save_checkpoint_metadata(&node).await.unwrap();
+        store.set_checkpoint_id(agent_id, cp_id).await.unwrap();
+
+        cp_id
+    }
+
     fn test_supervision_config() -> SupervisionConfig {
         SupervisionConfig {
             default_strategy: "one_for_one".into(),
@@ -217,7 +250,6 @@ mod tests {
         let agent_id = AgentId::new();
         supervisor.register_agent(agent_id);
 
-        // 82% usage (above 80% context_threshold_pct but below 85% force_kill_pct)
         supervisor
             .handle_token_report(agent_id, 82_000, 18_000)
             .await;
@@ -249,7 +281,6 @@ mod tests {
         let agent_id = AgentId::new();
         supervisor.register_agent(agent_id);
 
-        // 90% usage (above 85% force_kill_pct)
         supervisor
             .handle_token_report(agent_id, 90_000, 10_000)
             .await;
@@ -281,7 +312,6 @@ mod tests {
         let agent_id = AgentId::new();
         supervisor.register_agent(agent_id);
 
-        // 50% usage (well below thresholds)
         supervisor
             .handle_token_report(agent_id, 50_000, 50_000)
             .await;
@@ -300,18 +330,16 @@ mod tests {
 
         let agent_id = AgentId::new();
         let objective_id = ObjectiveId::new();
-        let checkpoint_id = nephila_core::id::CheckpointId::new();
         let dir = std::path::PathBuf::from("/tmp/test");
 
-        let mut agent = nephila_core::agent::Agent::new(
+        let checkpoint_id = register_agent_with_checkpoint(
+            &store,
             agent_id,
             objective_id,
-            dir.clone(),
-            nephila_core::agent::SpawnOrigin::Operator,
-            Some("test objective".into()),
-        );
-        agent.checkpoint_id = Some(checkpoint_id);
-        store.register(agent).await.unwrap();
+            &dir,
+            Some("test objective"),
+        )
+        .await;
 
         let mut supervisor = LifecycleSupervisor::new(
             event_tx.subscribe(),
@@ -354,7 +382,6 @@ mod tests {
             nephila_core::agent::SpawnOrigin::Operator,
             Some("test objective".into()),
         );
-        // No checkpoint_id set
         store.register(agent).await.unwrap();
 
         let mut supervisor = LifecycleSupervisor::new(
@@ -392,34 +419,14 @@ mod tests {
             config,
         );
 
-        // First agent exits with checkpoint -> should respawn
         let agent_id_1 = AgentId::new();
-        let cp1 = nephila_core::id::CheckpointId::new();
-        let mut agent1 = nephila_core::agent::Agent::new(
-            agent_id_1,
-            objective_id,
-            dir.clone(),
-            nephila_core::agent::SpawnOrigin::Operator,
-            Some("test".into()),
-        );
-        agent1.checkpoint_id = Some(cp1);
-        store.register(agent1).await.unwrap();
+        register_agent_with_checkpoint(&store, agent_id_1, objective_id, &dir, Some("test")).await;
 
         supervisor.handle_agent_exited(agent_id_1).await;
         assert!(cmd_rx.try_recv().is_ok(), "first respawn should succeed");
 
-        // Second agent (same objective) exits -> should be blocked
         let agent_id_2 = AgentId::new();
-        let cp2 = nephila_core::id::CheckpointId::new();
-        let mut agent2 = nephila_core::agent::Agent::new(
-            agent_id_2,
-            objective_id,
-            dir.clone(),
-            nephila_core::agent::SpawnOrigin::Operator,
-            Some("test".into()),
-        );
-        agent2.checkpoint_id = Some(cp2);
-        store.register(agent2).await.unwrap();
+        register_agent_with_checkpoint(&store, agent_id_2, objective_id, &dir, Some("test")).await;
 
         supervisor.handle_agent_exited(agent_id_2).await;
         assert!(

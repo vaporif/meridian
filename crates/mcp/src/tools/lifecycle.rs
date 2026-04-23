@@ -52,7 +52,6 @@ impl AsyncTool<NephilaMcpServer> for ReportTokenEstimateTool {
     ) -> Result<Self::Output, Self::Error> {
         let agent_id = parse_agent_id(&params.agent_id)?;
 
-        // Publish the event; the LifecycleSupervisor handles threshold decisions.
         let _ = service.event_tx.send(BusEvent::TokenReport {
             agent_id,
             used: params.tokens_used,
