@@ -100,7 +100,7 @@ impl CheckpointStore for FerrexStore {
                 .map_err(|e| NephilaError::Storage(format!("L2 embedding failed: {e}")))?;
 
             let mut payload_data = Vec::with_capacity(l2_chunks.len());
-            for (chunk, embedding) in l2_chunks.iter().zip(embeddings.into_iter()) {
+            for (chunk, embedding) in l2_chunks.iter().zip(embeddings) {
                 let payload = qdrant_client::Payload::try_from(serde_json::json!({
                     "agent_id": node.agent_id.0.to_string(),
                     "checkpoint_id": node.id.0.to_string(),

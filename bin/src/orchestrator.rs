@@ -117,10 +117,10 @@ impl Orchestrator {
                     }
                 }
                 OrchestratorCommand::Kill { agent_id } => {
-                    if let Some(handle) = self.process_handles.get(&agent_id) {
-                        if let Err(e) = handle.kill().await {
-                            tracing::warn!(%agent_id, %e, "failed to kill process");
-                        }
+                    if let Some(handle) = self.process_handles.get(&agent_id)
+                        && let Err(e) = handle.kill().await
+                    {
+                        tracing::warn!(%agent_id, %e, "failed to kill process");
                     }
                     self.dispatch(agent_id, AgentCommand::Kill).await
                 }
@@ -135,10 +135,10 @@ impl Orchestrator {
                     Ok(())
                 }
                 OrchestratorCommand::Suspend { agent_id } => {
-                    if let Some(handle) = self.process_handles.get(&agent_id) {
-                        if let Err(e) = handle.kill().await {
-                            tracing::warn!(%agent_id, %e, "failed to kill process for suspend");
-                        }
+                    if let Some(handle) = self.process_handles.get(&agent_id)
+                        && let Err(e) = handle.kill().await
+                    {
+                        tracing::warn!(%agent_id, %e, "failed to kill process for suspend");
                     }
                     self.dispatch(agent_id, AgentCommand::Kill).await
                 }
@@ -237,7 +237,7 @@ impl Orchestrator {
             &content,
         );
 
-        let (task_handle, process_handle) = connector
+        let (_task_handle, process_handle) = connector
             .spawn(agent_id, &spawn_config, &prompt, &session_id)
             .await
             .map_err(|e| color_eyre::eyre::eyre!("spawn failed: {e}"))?;

@@ -72,32 +72,31 @@ impl ProcessHandle {
     }
 
     pub async fn is_running(&self) -> bool {
-        let mut guard = self.child.lock().await;
-        match guard.as_mut() {
-            Some(child) => child.try_wait().ok().flatten().is_none(),
-            None => false,
-        }
+        self.child
+            .lock()
+            .await
+            .as_mut()
+            .is_some_and(|child| child.try_wait().ok().flatten().is_none())
     }
 
     /// Send SIGTERM, wait up to 5s, then SIGKILL if still alive.
     pub async fn kill(&self) -> Result<(), ConnectorError> {
         let mut guard = self.child.lock().await;
-        let child = match guard.take() {
-            Some(c) => c,
-            None => return Ok(()),
+        let Some(child) = guard.take() else {
+            return Ok(());
         };
+        drop(guard);
         Self::kill_child(child).await
     }
 
     async fn kill_child(mut child: Child) -> Result<(), ConnectorError> {
-        let pid = match child.id() {
-            Some(pid) => pid,
-            None => return Ok(()), // already exited
+        let Some(pid) = child.id() else {
+            return Ok(()); // already exited
         };
 
         // SAFETY: pid is valid (we just got it from the child) and SIGTERM is a standard signal.
         unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
+            libc::kill(pid.try_into().expect("pid fits in i32"), libc::SIGTERM);
         }
 
         match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await {
@@ -117,15 +116,13 @@ impl ProcessHandle {
 
     pub async fn wait(&self) -> Result<TaskResult, ConnectorError> {
         let mut guard = self.child.lock().await;
-        let child = match guard.take() {
-            Some(c) => c,
-            None => {
-                return Ok(TaskResult {
-                    output: String::new(),
-                    usage: None,
-                });
-            }
+        let Some(child) = guard.take() else {
+            return Ok(TaskResult {
+                output: String::new(),
+                usage: None,
+            });
         };
+        drop(guard);
 
         let output = child
             .wait_with_output()

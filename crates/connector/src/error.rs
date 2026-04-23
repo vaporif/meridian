@@ -71,7 +71,7 @@ mod tests {
 
     #[test]
     fn other_error_converts_to_nephila_error() {
-        let inner = std::io::Error::new(std::io::ErrorKind::Other, "boom");
+        let inner = std::io::Error::other("boom");
         let err = ConnectorError::Other(Box::new(inner));
         let me: NephilaError = err.into();
         assert!(matches!(me, NephilaError::Connector(_)));

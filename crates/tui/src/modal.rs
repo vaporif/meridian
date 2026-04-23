@@ -66,10 +66,10 @@ impl Modal {
     pub fn move_down(&mut self) {
         let count = self.item_count();
         match self {
-            Self::HitlResponse { selected, .. } | Self::FilePicker { selected, .. } => {
-                if *selected + 1 < count {
-                    *selected += 1;
-                }
+            Self::HitlResponse { selected, .. } | Self::FilePicker { selected, .. }
+                if *selected + 1 < count =>
+            {
+                *selected += 1;
             }
             _ => {}
         }
@@ -237,15 +237,13 @@ mod tests {
     fn modal_is_open() {
         assert!(!Modal::None.is_open());
         assert!(Modal::Help.is_open());
-        assert!(
-            Modal::HitlResponse {
-                agent_id: AgentId::new(),
-                question: "q".into(),
-                options: vec!["a".into()],
-                selected: 0,
-            }
-            .is_open()
-        );
+        assert!(Modal::HitlResponse {
+            agent_id: AgentId::new(),
+            question: "q".into(),
+            options: vec!["a".into()],
+            selected: 0,
+        }
+        .is_open());
     }
 
     #[test]
