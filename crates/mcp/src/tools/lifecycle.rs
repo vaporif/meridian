@@ -51,36 +51,8 @@ impl AsyncTool<NephilaMcpServer> for ReportTokenEstimateTool {
         params: Self::Parameter,
     ) -> Result<Self::Output, Self::Error> {
         let agent_id = parse_agent_id(&params.agent_id)?;
-        let total = params.tokens_used + params.tokens_remaining;
-        let pct = if total > 0 {
-            (params.tokens_used * 100 / total) as u8
-        } else {
-            0
-        };
 
-        if pct >= service.config.lifecycle.token_force_kill_pct {
-            if let Err(e) = service
-                .cmd_tx
-                .send(OrchestratorCommand::TokenThreshold {
-                    agent_id,
-                    directive: Directive::Abort,
-                })
-                .await
-            {
-                tracing::warn!(%agent_id, %e, "failed to send token threshold abort command");
-            }
-        } else if pct >= service.config.lifecycle.context_threshold_pct
-            && let Err(e) = service
-                .cmd_tx
-                .send(OrchestratorCommand::TokenThreshold {
-                    agent_id,
-                    directive: Directive::PrepareReset,
-                })
-                .await
-        {
-            tracing::warn!(%agent_id, %e, "failed to send token threshold reset command");
-        }
-
+        // Publish the event; the LifecycleSupervisor handles threshold decisions.
         let _ = service.event_tx.send(BusEvent::TokenReport {
             agent_id,
             used: params.tokens_used,

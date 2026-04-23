@@ -2,8 +2,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use nephila_connector::{ClaudeCodeConnector, TaskConnectorKind};
-use nephila_core::agent::{Agent, AgentCommand, AgentEvent, SpawnOrigin};
+use nephila_connector::{
+    ClaudeCodeConnector, ProcessHandle, SpawnConfig, TaskConnector, TaskConnectorKind,
+};
+use nephila_core::agent::{Agent, AgentCommand, AgentEvent, AgentState, SpawnOrigin};
 use nephila_core::command::OrchestratorCommand;
 use nephila_core::config::ConnectorConfig;
 use nephila_core::directive::Directive;
@@ -17,11 +19,14 @@ use tokio::sync::{RwLock, broadcast, mpsc};
 pub struct Orchestrator {
     agents: HashMap<AgentId, Agent>,
     connectors: HashMap<AgentId, TaskConnectorKind>,
+    process_handles: HashMap<AgentId, ProcessHandle>,
     connector_config: ConnectorConfig,
     store: Arc<SqliteStore>,
     event_tx: broadcast::Sender<BusEvent>,
     hitl_requests: Arc<RwLock<HashMap<AgentId, HitlRequest>>>,
     max_agent_depth: u32,
+    mcp_endpoint: String,
+    cmd_tx: mpsc::Sender<OrchestratorCommand>,
 }
 
 impl Orchestrator {
@@ -31,17 +36,22 @@ impl Orchestrator {
         hitl_requests: Arc<RwLock<HashMap<AgentId, HitlRequest>>>,
         max_agent_depth: u32,
         connector_config: ConnectorConfig,
+        mcp_endpoint: String,
+        cmd_tx: mpsc::Sender<OrchestratorCommand>,
     ) -> color_eyre::Result<Self> {
         let agents_list = store.list().await?;
         let agents = agents_list.into_iter().map(|a| (a.id, a)).collect();
         Ok(Self {
             agents,
             connectors: HashMap::new(),
+            process_handles: HashMap::new(),
             connector_config,
             store,
             event_tx,
             hitl_requests,
             max_agent_depth,
+            mcp_endpoint,
+            cmd_tx,
         })
     }
 
@@ -90,6 +100,11 @@ impl Orchestrator {
                     }
                 }
                 OrchestratorCommand::Kill { agent_id } => {
+                    if let Some(handle) = self.process_handles.get(&agent_id) {
+                        if let Err(e) = handle.kill().await {
+                            tracing::warn!(%agent_id, %e, "failed to kill process");
+                        }
+                    }
                     self.dispatch(agent_id, AgentCommand::Kill).await
                 }
                 OrchestratorCommand::Pause { agent_id } => {
@@ -103,6 +118,11 @@ impl Orchestrator {
                     Ok(())
                 }
                 OrchestratorCommand::Suspend { agent_id } => {
+                    if let Some(handle) = self.process_handles.get(&agent_id) {
+                        if let Err(e) = handle.kill().await {
+                            tracing::warn!(%agent_id, %e, "failed to kill process for suspend");
+                        }
+                    }
                     self.dispatch(agent_id, AgentCommand::Kill).await
                 }
                 OrchestratorCommand::TokenThreshold {
@@ -115,6 +135,30 @@ impl Orchestrator {
                     }
                     _ => Ok(()),
                 },
+                OrchestratorCommand::AgentExited { agent_id, success } => {
+                    self.handle_agent_exited(agent_id, success).await
+                }
+                OrchestratorCommand::Respawn {
+                    objective_id,
+                    content,
+                    dir,
+                    restore_checkpoint_id,
+                } => {
+                    match self.spawn(objective_id, content, dir, None).await {
+                        Ok(new_agent_id) => {
+                            if let Some(agent) = self.agents.get_mut(&new_agent_id) {
+                                agent.restore_checkpoint_id = Some(restore_checkpoint_id);
+                                if let Err(e) =
+                                    AgentStore::save(self.store.as_ref(), agent).await
+                                {
+                                    tracing::error!(%e, %new_agent_id, "failed to save restore checkpoint");
+                                }
+                            }
+                            Ok(())
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
             };
 
             if let Err(e) = result {
@@ -136,7 +180,13 @@ impl Orchestrator {
             Some(parent) => SpawnOrigin::Agent(parent),
             None => SpawnOrigin::Operator,
         };
-        let agent = Agent::new(AgentId::new(), objective_id, dir, origin, Some(content));
+        let agent = Agent::new(
+            AgentId::new(),
+            objective_id,
+            dir.clone(),
+            origin,
+            Some(content.clone()),
+        );
         let agent_id = agent.id;
 
         self.store.register(agent.clone()).await?;
@@ -148,7 +198,9 @@ impl Orchestrator {
 
         let session_id = uuid::Uuid::new_v4().to_string();
         let session_events = agent
-            .handle(AgentCommand::SetSession { session_id })
+            .handle(AgentCommand::SetSession {
+                session_id: session_id.clone(),
+            })
             .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
         let agent = session_events.iter().fold(agent, |a, e| a.apply_event(e));
 
@@ -158,8 +210,36 @@ impl Orchestrator {
         self.agents.insert(agent_id, agent);
 
         let connector = ClaudeCodeConnector::new(self.connector_config.claude_binary.clone());
+        let spawn_config = SpawnConfig {
+            directory: dir,
+            mcp_endpoint: self.mcp_endpoint.clone(),
+            request_config: None,
+        };
+
+        let (task_handle, process_handle) = connector
+            .spawn(agent_id, &spawn_config, &content, &session_id)
+            .await
+            .map_err(|e| color_eyre::eyre::eyre!("spawn failed: {e}"))?;
+
+        let _ = task_handle;
+
         self.connectors
             .insert(agent_id, TaskConnectorKind::ClaudeCode(connector));
+        self.process_handles.insert(agent_id, process_handle.clone());
+
+        // Spawn watcher task
+        let cmd_tx = self.cmd_tx.clone();
+        let watcher_handle = process_handle;
+        tokio::spawn(async move {
+            let result = watcher_handle.wait().await;
+            let success = result.is_ok();
+            let _ = cmd_tx
+                .send(OrchestratorCommand::AgentExited {
+                    agent_id,
+                    success,
+                })
+                .await;
+        });
 
         // Track child in parent's children list
         if let Some(parent_id) = spawned_by
@@ -170,6 +250,39 @@ impl Orchestrator {
         }
 
         Ok(agent_id)
+    }
+
+    async fn handle_agent_exited(
+        &mut self,
+        agent_id: AgentId,
+        success: bool,
+    ) -> color_eyre::Result<()> {
+        let agent = match self.agents.get(&agent_id) {
+            Some(a) => a,
+            None => {
+                tracing::warn!(%agent_id, "AgentExited for unknown agent");
+                return Ok(());
+            }
+        };
+
+        if matches!(
+            agent.state,
+            AgentState::Exited | AgentState::Completed | AgentState::Failed
+        ) {
+            return Ok(());
+        }
+
+        let cmd = match agent.state {
+            AgentState::Suspending => AgentCommand::Kill,
+            AgentState::Active if success => AgentCommand::Complete,
+            _ => AgentCommand::Fail {
+                reason: "process exited unexpectedly".into(),
+            },
+        };
+
+        self.dispatch(agent_id, cmd).await?;
+        self.process_handles.remove(&agent_id);
+        Ok(())
     }
 
     async fn dispatch(&mut self, agent_id: AgentId, cmd: AgentCommand) -> color_eyre::Result<()> {
@@ -259,14 +372,18 @@ mod tests {
     fn test_orchestrator(agents: HashMap<AgentId, Agent>) -> Orchestrator {
         let store = Arc::new(SqliteStore::open_in_memory(384).unwrap());
         let (event_tx, _) = broadcast::channel(16);
+        let (cmd_tx, _cmd_rx) = mpsc::channel(16);
         Orchestrator {
             agents,
             connectors: HashMap::new(),
+            process_handles: HashMap::new(),
             connector_config: ConnectorConfig::default(),
             store,
             event_tx,
             hitl_requests: Arc::new(RwLock::new(HashMap::new())),
             max_agent_depth: 3,
+            mcp_endpoint: "http://localhost:8080/mcp".into(),
+            cmd_tx,
         }
     }
 
@@ -310,5 +427,30 @@ mod tests {
     fn depth_of_unknown_agent_is_zero() {
         let orch = test_orchestrator(HashMap::new());
         assert_eq!(orch.agent_depth(AgentId::new()), 0);
+    }
+
+    #[tokio::test]
+    async fn agent_exited_from_suspending_transitions_to_exited() {
+        let agent_id = AgentId::new();
+        let objective_id = ObjectiveId::new();
+
+        let mut agent = make_agent(agent_id, None);
+        agent.objective_id = objective_id;
+        let events = agent.handle(AgentCommand::Activate).unwrap();
+        let agent = events.iter().fold(agent, |a, e| a.apply_event(e));
+        let events = agent.handle(AgentCommand::StartSuspending).unwrap();
+        let agent = events.iter().fold(agent, |a, e| a.apply_event(e));
+        assert_eq!(agent.state, AgentState::Suspending);
+
+        let mut agents = HashMap::new();
+        agents.insert(agent_id, agent);
+
+        let mut orch = test_orchestrator(agents);
+
+        let result = orch.handle_agent_exited(agent_id, true).await;
+        assert!(result.is_ok());
+
+        let agent = orch.agents.get(&agent_id).unwrap();
+        assert_eq!(agent.state, AgentState::Exited);
     }
 }

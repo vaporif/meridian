@@ -12,6 +12,7 @@ categories.workspace = true
 
 [dependencies]
 nephila-core = { workspace = true }
+nephila-store = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time"] }
 serde_json = { workspace = true }
 tracing = { workspace = true }
