@@ -66,10 +66,10 @@ impl Modal {
     pub fn move_down(&mut self) {
         let count = self.item_count();
         match self {
-            Self::HitlResponse { selected, .. } | Self::FilePicker { selected, .. } => {
-                if *selected + 1 < count {
-                    *selected += 1;
-                }
+            Self::HitlResponse { selected, .. } | Self::FilePicker { selected, .. }
+                if *selected + 1 < count =>
+            {
+                *selected += 1;
             }
             _ => {}
         }

@@ -1,5 +1,5 @@
 use crate::directive::Directive;
-use crate::id::{AgentId, ObjectiveId};
+use crate::id::{AgentId, CheckpointId, ObjectiveId};
 use std::path::PathBuf;
 
 #[derive(Debug)]
@@ -34,5 +34,15 @@ pub enum OrchestratorCommand {
     TokenThreshold {
         agent_id: AgentId,
         directive: Directive,
+    },
+    AgentExited {
+        agent_id: AgentId,
+        success: bool,
+    },
+    Respawn {
+        objective_id: ObjectiveId,
+        content: String,
+        dir: PathBuf,
+        restore_checkpoint_id: CheckpointId,
     },
 }

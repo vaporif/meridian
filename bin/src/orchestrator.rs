@@ -2,8 +2,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use nephila_connector::{ClaudeCodeConnector, TaskConnectorKind};
-use nephila_core::agent::{Agent, AgentCommand, AgentEvent, SpawnOrigin};
+use nephila_connector::{
+    ClaudeCodeConnector, ProcessHandle, SpawnConfig, TaskConnector, TaskConnectorKind,
+};
+use nephila_core::agent::{Agent, AgentCommand, AgentEvent, AgentState, SpawnOrigin};
 use nephila_core::command::OrchestratorCommand;
 use nephila_core::config::ConnectorConfig;
 use nephila_core::directive::Directive;
@@ -14,14 +16,34 @@ use nephila_mcp::state::HitlRequest;
 use nephila_store::SqliteStore;
 use tokio::sync::{RwLock, broadcast, mpsc};
 
+const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../../config/agent_system_prompt.md");
+
+fn compose_prompt(
+    template: &str,
+    agent_id: AgentId,
+    objective_id: ObjectiveId,
+    mcp_endpoint: &str,
+    objective_content: &str,
+) -> String {
+    let protocol = template
+        .replace("{{agent_id}}", &agent_id.to_string())
+        .replace("{{objective_id}}", &objective_id.to_string())
+        .replace("{{mcp_endpoint}}", mcp_endpoint);
+
+    format!("{protocol}\n\n---\n\n# Your Task\n\n{objective_content}")
+}
+
 pub struct Orchestrator {
     agents: HashMap<AgentId, Agent>,
     connectors: HashMap<AgentId, TaskConnectorKind>,
+    process_handles: HashMap<AgentId, ProcessHandle>,
     connector_config: ConnectorConfig,
     store: Arc<SqliteStore>,
     event_tx: broadcast::Sender<BusEvent>,
     hitl_requests: Arc<RwLock<HashMap<AgentId, HitlRequest>>>,
     max_agent_depth: u32,
+    mcp_endpoint: String,
+    cmd_tx: mpsc::Sender<OrchestratorCommand>,
 }
 
 impl Orchestrator {
@@ -31,17 +53,22 @@ impl Orchestrator {
         hitl_requests: Arc<RwLock<HashMap<AgentId, HitlRequest>>>,
         max_agent_depth: u32,
         connector_config: ConnectorConfig,
+        mcp_endpoint: String,
+        cmd_tx: mpsc::Sender<OrchestratorCommand>,
     ) -> color_eyre::Result<Self> {
         let agents_list = store.list().await?;
         let agents = agents_list.into_iter().map(|a| (a.id, a)).collect();
         Ok(Self {
             agents,
             connectors: HashMap::new(),
+            process_handles: HashMap::new(),
             connector_config,
             store,
             event_tx,
             hitl_requests,
             max_agent_depth,
+            mcp_endpoint,
+            cmd_tx,
         })
     }
 
@@ -90,6 +117,11 @@ impl Orchestrator {
                     }
                 }
                 OrchestratorCommand::Kill { agent_id } => {
+                    if let Some(handle) = self.process_handles.get(&agent_id)
+                        && let Err(e) = handle.kill().await
+                    {
+                        tracing::warn!(%agent_id, %e, "failed to kill process");
+                    }
                     self.dispatch(agent_id, AgentCommand::Kill).await
                 }
                 OrchestratorCommand::Pause { agent_id } => {
@@ -103,6 +135,11 @@ impl Orchestrator {
                     Ok(())
                 }
                 OrchestratorCommand::Suspend { agent_id } => {
+                    if let Some(handle) = self.process_handles.get(&agent_id)
+                        && let Err(e) = handle.kill().await
+                    {
+                        tracing::warn!(%agent_id, %e, "failed to kill process for suspend");
+                    }
                     self.dispatch(agent_id, AgentCommand::Kill).await
                 }
                 OrchestratorCommand::TokenThreshold {
@@ -114,6 +151,26 @@ impl Orchestrator {
                         self.dispatch(agent_id, AgentCommand::StartSuspending).await
                     }
                     _ => Ok(()),
+                },
+                OrchestratorCommand::AgentExited { agent_id, success } => {
+                    self.handle_agent_exited(agent_id, success).await
+                }
+                OrchestratorCommand::Respawn {
+                    objective_id,
+                    content,
+                    dir,
+                    restore_checkpoint_id,
+                } => match self.spawn(objective_id, content, dir, None).await {
+                    Ok(new_agent_id) => {
+                        if let Some(agent) = self.agents.get_mut(&new_agent_id) {
+                            agent.restore_checkpoint_id = Some(restore_checkpoint_id);
+                            if let Err(e) = AgentStore::save(self.store.as_ref(), agent).await {
+                                tracing::error!(%e, %new_agent_id, "failed to save restore checkpoint");
+                            }
+                        }
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
                 },
             };
 
@@ -136,7 +193,13 @@ impl Orchestrator {
             Some(parent) => SpawnOrigin::Agent(parent),
             None => SpawnOrigin::Operator,
         };
-        let agent = Agent::new(AgentId::new(), objective_id, dir, origin, Some(content));
+        let agent = Agent::new(
+            AgentId::new(),
+            objective_id,
+            dir.clone(),
+            origin,
+            Some(content.clone()),
+        );
         let agent_id = agent.id;
 
         self.store.register(agent.clone()).await?;
@@ -148,7 +211,9 @@ impl Orchestrator {
 
         let session_id = uuid::Uuid::new_v4().to_string();
         let session_events = agent
-            .handle(AgentCommand::SetSession { session_id })
+            .handle(AgentCommand::SetSession {
+                session_id: session_id.clone(),
+            })
             .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
         let agent = session_events.iter().fold(agent, |a, e| a.apply_event(e));
 
@@ -158,10 +223,40 @@ impl Orchestrator {
         self.agents.insert(agent_id, agent);
 
         let connector = ClaudeCodeConnector::new(self.connector_config.claude_binary.clone());
+        let spawn_config = SpawnConfig {
+            directory: dir,
+            mcp_endpoint: self.mcp_endpoint.clone(),
+            request_config: None,
+        };
+
+        let prompt = compose_prompt(
+            SYSTEM_PROMPT_TEMPLATE,
+            agent_id,
+            objective_id,
+            &self.mcp_endpoint,
+            &content,
+        );
+
+        let (_task_handle, process_handle) = connector
+            .spawn(agent_id, &spawn_config, &prompt, &session_id)
+            .await
+            .map_err(|e| color_eyre::eyre::eyre!("spawn failed: {e}"))?;
+
         self.connectors
             .insert(agent_id, TaskConnectorKind::ClaudeCode(connector));
+        self.process_handles
+            .insert(agent_id, process_handle.clone());
 
-        // Track child in parent's children list
+        let cmd_tx = self.cmd_tx.clone();
+        let watcher_handle = process_handle;
+        tokio::spawn(async move {
+            let result = watcher_handle.wait().await;
+            let success = result.is_ok();
+            let _ = cmd_tx
+                .send(OrchestratorCommand::AgentExited { agent_id, success })
+                .await;
+        });
+
         if let Some(parent_id) = spawned_by
             && let Some(parent) = self.agents.get_mut(&parent_id)
         {
@@ -170,6 +265,39 @@ impl Orchestrator {
         }
 
         Ok(agent_id)
+    }
+
+    async fn handle_agent_exited(
+        &mut self,
+        agent_id: AgentId,
+        success: bool,
+    ) -> color_eyre::Result<()> {
+        let agent = match self.agents.get(&agent_id) {
+            Some(a) => a,
+            None => {
+                tracing::warn!(%agent_id, "AgentExited for unknown agent");
+                return Ok(());
+            }
+        };
+
+        if matches!(
+            agent.state,
+            AgentState::Exited | AgentState::Completed | AgentState::Failed
+        ) {
+            return Ok(());
+        }
+
+        let cmd = match agent.state {
+            AgentState::Suspending => AgentCommand::Kill,
+            AgentState::Active if success => AgentCommand::Complete,
+            _ => AgentCommand::Fail {
+                reason: "process exited unexpectedly".into(),
+            },
+        };
+
+        self.dispatch(agent_id, cmd).await?;
+        self.process_handles.remove(&agent_id);
+        Ok(())
     }
 
     async fn dispatch(&mut self, agent_id: AgentId, cmd: AgentCommand) -> color_eyre::Result<()> {
@@ -259,14 +387,18 @@ mod tests {
     fn test_orchestrator(agents: HashMap<AgentId, Agent>) -> Orchestrator {
         let store = Arc::new(SqliteStore::open_in_memory(384).unwrap());
         let (event_tx, _) = broadcast::channel(16);
+        let (cmd_tx, _cmd_rx) = mpsc::channel(16);
         Orchestrator {
             agents,
             connectors: HashMap::new(),
+            process_handles: HashMap::new(),
             connector_config: ConnectorConfig::default(),
             store,
             event_tx,
             hitl_requests: Arc::new(RwLock::new(HashMap::new())),
             max_agent_depth: 3,
+            mcp_endpoint: "http://localhost:8080/mcp".into(),
+            cmd_tx,
         }
     }
 
@@ -310,5 +442,251 @@ mod tests {
     fn depth_of_unknown_agent_is_zero() {
         let orch = test_orchestrator(HashMap::new());
         assert_eq!(orch.agent_depth(AgentId::new()), 0);
+    }
+
+    #[test]
+    fn compose_prompt_interpolates_placeholders() {
+        let agent_id = AgentId::new();
+        let objective_id = ObjectiveId::new();
+        let result = compose_prompt(
+            "Agent {{agent_id}} on {{objective_id}} at {{mcp_endpoint}}",
+            agent_id,
+            objective_id,
+            "http://localhost:8080/mcp",
+            "do the thing",
+        );
+        assert!(result.contains(&agent_id.to_string()));
+        assert!(result.contains(&objective_id.to_string()));
+        assert!(result.contains("http://localhost:8080/mcp"));
+        assert!(result.contains("do the thing"));
+    }
+
+    fn activate_agent(agent: Agent) -> Agent {
+        let events = agent.handle(AgentCommand::Activate).unwrap();
+        events.iter().fold(agent, |a, e| a.apply_event(e))
+    }
+
+    #[tokio::test]
+    async fn agent_exited_from_suspending_transitions_to_exited() {
+        let agent_id = AgentId::new();
+        let objective_id = ObjectiveId::new();
+
+        let mut agent = make_agent(agent_id, None);
+        agent.objective_id = objective_id;
+        let agent = activate_agent(agent);
+        let events = agent.handle(AgentCommand::StartSuspending).unwrap();
+        let agent = events.iter().fold(agent, |a, e| a.apply_event(e));
+        assert_eq!(agent.state, AgentState::Suspending);
+
+        let mut agents = HashMap::new();
+        agents.insert(agent_id, agent.clone());
+
+        let mut orch = test_orchestrator(agents);
+        orch.store.register(agent).await.unwrap();
+
+        let result = orch.handle_agent_exited(agent_id, true).await;
+        assert!(result.is_ok());
+
+        let agent = orch.agents.get(&agent_id).unwrap();
+        assert_eq!(agent.state, AgentState::Exited);
+    }
+
+    #[tokio::test]
+    async fn agent_exited_active_success_transitions_to_completed() {
+        let agent_id = AgentId::new();
+        let agent = activate_agent(make_agent(agent_id, None));
+        assert_eq!(agent.state, AgentState::Active);
+
+        let mut agents = HashMap::new();
+        agents.insert(agent_id, agent.clone());
+
+        let mut orch = test_orchestrator(agents);
+        orch.store.register(agent).await.unwrap();
+
+        orch.handle_agent_exited(agent_id, true).await.unwrap();
+
+        let agent = orch.agents.get(&agent_id).unwrap();
+        assert_eq!(agent.state, AgentState::Completed);
+    }
+
+    #[tokio::test]
+    async fn agent_exited_active_failure_transitions_to_failed() {
+        let agent_id = AgentId::new();
+        let agent = activate_agent(make_agent(agent_id, None));
+
+        let mut agents = HashMap::new();
+        agents.insert(agent_id, agent.clone());
+
+        let mut orch = test_orchestrator(agents);
+        orch.store.register(agent).await.unwrap();
+
+        orch.handle_agent_exited(agent_id, false).await.unwrap();
+
+        let agent = orch.agents.get(&agent_id).unwrap();
+        assert_eq!(agent.state, AgentState::Failed);
+    }
+
+    #[tokio::test]
+    async fn agent_exited_unknown_agent_is_ok() {
+        let mut orch = test_orchestrator(HashMap::new());
+        let result = orch.handle_agent_exited(AgentId::new(), true).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn agent_exited_already_completed_is_noop() {
+        let agent_id = AgentId::new();
+        let agent = activate_agent(make_agent(agent_id, None));
+        let events = agent.handle(AgentCommand::Complete).unwrap();
+        let agent = events.iter().fold(agent, |a, e| a.apply_event(e));
+        assert_eq!(agent.state, AgentState::Completed);
+
+        let mut agents = HashMap::new();
+        agents.insert(agent_id, agent.clone());
+
+        let mut orch = test_orchestrator(agents);
+        orch.store.register(agent).await.unwrap();
+
+        orch.handle_agent_exited(agent_id, false).await.unwrap();
+        // State should remain Completed (no-op)
+        assert_eq!(
+            orch.agents.get(&agent_id).unwrap().state,
+            AgentState::Completed
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_activates_agent_and_persists() {
+        let agent_id = AgentId::new();
+        let agent = make_agent(agent_id, None);
+        assert_eq!(agent.state, AgentState::Starting);
+
+        let mut agents = HashMap::new();
+        agents.insert(agent_id, agent.clone());
+
+        let mut orch = test_orchestrator(agents);
+        orch.store.register(agent).await.unwrap();
+
+        orch.dispatch(agent_id, AgentCommand::Activate)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            orch.agents.get(&agent_id).unwrap().state,
+            AgentState::Active
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_unknown_agent_errors() {
+        let mut orch = test_orchestrator(HashMap::new());
+        let result = orch.dispatch(AgentId::new(), AgentCommand::Activate).await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn publish_emits_state_changed_event() {
+        let (event_tx, mut event_rx) = broadcast::channel(16);
+        let store = Arc::new(SqliteStore::open_in_memory(384).unwrap());
+        let (cmd_tx, _) = mpsc::channel(16);
+        let orch = Orchestrator {
+            agents: HashMap::new(),
+            connectors: HashMap::new(),
+            process_handles: HashMap::new(),
+            connector_config: ConnectorConfig::default(),
+            store,
+            event_tx,
+            hitl_requests: Arc::new(RwLock::new(HashMap::new())),
+            max_agent_depth: 3,
+            mcp_endpoint: "http://localhost:8080/mcp".into(),
+            cmd_tx,
+        };
+
+        let agent_id = AgentId::new();
+        let events = vec![AgentEvent::StateChanged {
+            agent_id,
+            old_state: AgentState::Starting,
+            new_state: AgentState::Active,
+        }];
+        orch.publish(&events);
+
+        let received = event_rx.try_recv().unwrap();
+        assert!(matches!(
+            received,
+            BusEvent::AgentStateChanged {
+                new_state: AgentState::Active,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn publish_emits_session_ready_event() {
+        let (event_tx, mut event_rx) = broadcast::channel(16);
+        let store = Arc::new(SqliteStore::open_in_memory(384).unwrap());
+        let (cmd_tx, _) = mpsc::channel(16);
+        let orch = Orchestrator {
+            agents: HashMap::new(),
+            connectors: HashMap::new(),
+            process_handles: HashMap::new(),
+            connector_config: ConnectorConfig::default(),
+            store,
+            event_tx,
+            hitl_requests: Arc::new(RwLock::new(HashMap::new())),
+            max_agent_depth: 3,
+            mcp_endpoint: "http://localhost:8080/mcp".into(),
+            cmd_tx,
+        };
+
+        let agent_id = AgentId::new();
+        let events = vec![AgentEvent::SessionReady {
+            agent_id,
+            session_id: "sess-1".into(),
+            directory: PathBuf::from("/tmp"),
+        }];
+        orch.publish(&events);
+
+        let received = event_rx.try_recv().unwrap();
+        assert!(matches!(received, BusEvent::AgentSessionReady { .. }));
+    }
+
+    #[test]
+    fn publish_skips_non_broadcast_events() {
+        let (event_tx, mut event_rx) = broadcast::channel(16);
+        let store = Arc::new(SqliteStore::open_in_memory(384).unwrap());
+        let (cmd_tx, _) = mpsc::channel(16);
+        let orch = Orchestrator {
+            agents: HashMap::new(),
+            connectors: HashMap::new(),
+            process_handles: HashMap::new(),
+            connector_config: ConnectorConfig::default(),
+            store,
+            event_tx,
+            hitl_requests: Arc::new(RwLock::new(HashMap::new())),
+            max_agent_depth: 3,
+            mcp_endpoint: "http://localhost:8080/mcp".into(),
+            cmd_tx,
+        };
+
+        let events = vec![AgentEvent::DirectiveChanged {
+            agent_id: AgentId::new(),
+            directive: Directive::Continue,
+        }];
+        orch.publish(&events);
+
+        assert!(event_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn compose_prompt_appends_task_section() {
+        let result = compose_prompt(
+            "template",
+            AgentId::new(),
+            ObjectiveId::new(),
+            "http://localhost/mcp",
+            "my task",
+        );
+        assert!(result.contains("# Your Task"));
+        assert!(result.ends_with("my task"));
     }
 }

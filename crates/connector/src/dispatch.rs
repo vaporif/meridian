@@ -6,7 +6,7 @@ use crate::config::{RequestConfig, SpawnConfig};
 use crate::error::ConnectorError;
 use crate::message::MessageConnector;
 use crate::openai_compatible::OpenAiCompatibleConnector;
-use crate::task::{TaskConnector, TaskHandle, TaskResult, TaskStatus};
+use crate::task::{ProcessHandle, TaskConnector, TaskHandle, TaskResult, TaskStatus};
 use crate::types::{Message, Response, ToolDefinition};
 
 #[derive(Debug, Clone)]
@@ -22,28 +22,28 @@ impl TaskConnector for TaskConnectorKind {
         config: &SpawnConfig,
         prompt: &str,
         session_id: &str,
-    ) -> Result<TaskHandle, ConnectorError> {
+    ) -> Result<(TaskHandle, ProcessHandle), ConnectorError> {
         match self {
             Self::ClaudeCode(c) => c.spawn(agent_id, config, prompt, session_id).await,
             Self::AnthropicApi(c) => c.spawn(agent_id, config, prompt, session_id).await,
         }
     }
 
-    async fn status(&self, handle: &TaskHandle) -> Result<TaskStatus, ConnectorError> {
+    async fn status(&self, handle: &ProcessHandle) -> Result<TaskStatus, ConnectorError> {
         match self {
             Self::ClaudeCode(c) => c.status(handle).await,
             Self::AnthropicApi(c) => c.status(handle).await,
         }
     }
 
-    async fn kill(&self, handle: &TaskHandle) -> Result<(), ConnectorError> {
+    async fn kill(&self, handle: &ProcessHandle) -> Result<(), ConnectorError> {
         match self {
             Self::ClaudeCode(c) => c.kill(handle).await,
             Self::AnthropicApi(c) => c.kill(handle).await,
         }
     }
 
-    async fn wait(&self, handle: &TaskHandle) -> Result<TaskResult, ConnectorError> {
+    async fn wait(&self, handle: &ProcessHandle) -> Result<TaskResult, ConnectorError> {
         match self {
             Self::ClaudeCode(c) => c.wait(handle).await,
             Self::AnthropicApi(c) => c.wait(handle).await,

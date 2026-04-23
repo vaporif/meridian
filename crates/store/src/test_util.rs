@@ -6,10 +6,6 @@ use crate::SqliteStore;
 
 pub const TEST_DIM: usize = 384;
 
-pub fn make_embedding(val: f32) -> Vec<f32> {
-    vec![val; TEST_DIM]
-}
-
 pub async fn make_agent_and_store() -> (SqliteStore, AgentId) {
     let store = SqliteStore::open_in_memory(TEST_DIM).unwrap();
     let agent_id = AgentId::new();

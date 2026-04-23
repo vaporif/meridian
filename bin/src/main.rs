@@ -125,6 +125,8 @@ async fn main() -> Result<()> {
         let hitl_requests = hitl_requests.clone();
         let max_agent_depth = config.supervision.max_agent_depth;
         let connector_config = config.connector.clone();
+        let mcp_endpoint = format!("http://{bound_addr}/mcp");
+        let cmd_tx_clone = cmd_tx.clone();
         tokio::spawn(async move {
             match orchestrator::Orchestrator::load(
                 store,
@@ -132,12 +134,32 @@ async fn main() -> Result<()> {
                 hitl_requests,
                 max_agent_depth,
                 connector_config,
+                mcp_endpoint,
+                cmd_tx_clone,
             )
             .await
             {
                 Ok(mut orch) => orch.run(cmd_rx).await,
                 Err(e) => tracing::error!(%e, "failed to load orchestrator"),
             }
+        })
+    };
+
+    let lifecycle_handle = {
+        let event_rx = event_tx.subscribe();
+        let cmd_tx = cmd_tx.clone();
+        let store = sqlite_store.clone();
+        let lifecycle_config = config.lifecycle;
+        let supervision_config = config.supervision.clone();
+        tokio::spawn(async move {
+            let mut supervisor = nephila_lifecycle::LifecycleSupervisor::new(
+                event_rx,
+                cmd_tx,
+                store,
+                lifecycle_config,
+                supervision_config,
+            );
+            supervisor.run().await;
         })
     };
 
@@ -166,6 +188,7 @@ async fn main() -> Result<()> {
     let _ = event_tx.send(BusEvent::Shutdown);
     cancellation_token.cancel();
     cmd_handle.abort();
+    lifecycle_handle.abort();
     let _ = mcp_handle.await;
 
     Ok(())
