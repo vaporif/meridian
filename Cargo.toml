@@ -91,6 +91,9 @@ dirs = "6"
 # Enum utilities
 strum = { version = "0.28", features = ["derive"] }
 
+# System
+libc = "0.2"
+
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

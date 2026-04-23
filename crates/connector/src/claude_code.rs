@@ -5,7 +5,7 @@ use tokio::process::Command;
 
 use crate::config::SpawnConfig;
 use crate::error::ConnectorError;
-use crate::task::{TaskConnector, TaskHandle, TaskResult, TaskStatus};
+use crate::task::{ProcessHandle, TaskConnector, TaskHandle, TaskResult, TaskStatus};
 
 #[derive(Debug, Clone)]
 pub struct ClaudeCodeConnector {
@@ -56,7 +56,7 @@ impl TaskConnector for ClaudeCodeConnector {
         config: &SpawnConfig,
         prompt: &str,
         session_id: &str,
-    ) -> Result<TaskHandle, ConnectorError> {
+    ) -> Result<(TaskHandle, ProcessHandle), ConnectorError> {
         let mcp_config = Self::mcp_config_json(&config.mcp_endpoint);
         let mcp_path = config.directory.join(".mcp.json");
 
@@ -67,7 +67,7 @@ impl TaskConnector for ClaudeCodeConnector {
                 stderr: format!("failed to write .mcp.json: {e}"),
             })?;
 
-        let output = Command::new(&self.claude_binary)
+        let child = Command::new(&self.claude_binary)
             .arg("--dangerously-skip-permissions")
             .arg("-p")
             .arg(prompt)
@@ -85,43 +85,36 @@ impl TaskConnector for ClaudeCodeConnector {
             .map_err(|e| ConnectorError::Process {
                 exit_code: None,
                 stderr: format!("failed to spawn claude for agent {agent_id}: {e}"),
-            })?
-            .wait_with_output()
-            .await
-            .map_err(|e| ConnectorError::Process {
-                exit_code: None,
-                stderr: format!("claude process failed for agent {agent_id}: {e}"),
             })?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(ConnectorError::Process {
-                exit_code: output.status.code(),
-                stderr: stderr.chars().take(500).collect(),
-            });
-        }
+        tracing::info!(%agent_id, session_id, "claude process spawned");
 
-        tracing::info!(%agent_id, session_id, "initial claude session created");
-
-        Ok(TaskHandle::ClaudeCode {
+        let task_handle = TaskHandle::ClaudeCode {
             session_id: session_id.to_string(),
             directory: config.directory.clone(),
-        })
+        };
+        let process_handle = ProcessHandle::new(child);
+
+        Ok((task_handle, process_handle))
     }
 
-    async fn status(&self, _handle: &TaskHandle) -> Result<TaskStatus, ConnectorError> {
-        Ok(TaskStatus::Running)
+    async fn status(&self, handle: &ProcessHandle) -> Result<TaskStatus, ConnectorError> {
+        if handle.is_running().await {
+            Ok(TaskStatus::Running)
+        } else {
+            Ok(TaskStatus::Completed(TaskResult {
+                output: String::new(),
+                usage: None,
+            }))
+        }
     }
 
-    async fn kill(&self, _handle: &TaskHandle) -> Result<(), ConnectorError> {
-        Ok(())
+    async fn kill(&self, handle: &ProcessHandle) -> Result<(), ConnectorError> {
+        handle.kill().await
     }
 
-    async fn wait(&self, _handle: &TaskHandle) -> Result<TaskResult, ConnectorError> {
-        Ok(TaskResult {
-            output: String::new(),
-            usage: None,
-        })
+    async fn wait(&self, handle: &ProcessHandle) -> Result<TaskResult, ConnectorError> {
+        handle.wait().await
     }
 }
 

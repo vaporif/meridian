@@ -3,7 +3,7 @@ use nephila_core::id::AgentId;
 use crate::config::{RequestConfig, SpawnConfig};
 use crate::error::ConnectorError;
 use crate::message::MessageConnector;
-use crate::task::{TaskConnector, TaskHandle, TaskResult, TaskStatus};
+use crate::task::{ProcessHandle, TaskConnector, TaskHandle, TaskResult, TaskStatus};
 use crate::types::{Message, Response, ToolDefinition};
 
 #[derive(Debug, Clone)]
@@ -28,25 +28,25 @@ impl TaskConnector for AnthropicApiConnector {
         _config: &SpawnConfig,
         _prompt: &str,
         _session_id: &str,
-    ) -> Result<TaskHandle, ConnectorError> {
+    ) -> Result<(TaskHandle, ProcessHandle), ConnectorError> {
         Err(ConnectorError::Other(
             "AnthropicApiConnector task execution not yet implemented".into(),
         ))
     }
 
-    async fn status(&self, _handle: &TaskHandle) -> Result<TaskStatus, ConnectorError> {
+    async fn status(&self, _handle: &ProcessHandle) -> Result<TaskStatus, ConnectorError> {
         Err(ConnectorError::Other(
             "AnthropicApiConnector status not yet implemented".into(),
         ))
     }
 
-    async fn kill(&self, _handle: &TaskHandle) -> Result<(), ConnectorError> {
+    async fn kill(&self, _handle: &ProcessHandle) -> Result<(), ConnectorError> {
         Err(ConnectorError::Other(
             "AnthropicApiConnector kill not yet implemented".into(),
         ))
     }
 
-    async fn wait(&self, _handle: &TaskHandle) -> Result<TaskResult, ConnectorError> {
+    async fn wait(&self, _handle: &ProcessHandle) -> Result<TaskResult, ConnectorError> {
         Err(ConnectorError::Other(
             "AnthropicApiConnector wait not yet implemented".into(),
         ))
