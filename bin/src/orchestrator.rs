@@ -160,22 +160,18 @@ impl Orchestrator {
                     content,
                     dir,
                     restore_checkpoint_id,
-                } => {
-                    match self.spawn(objective_id, content, dir, None).await {
-                        Ok(new_agent_id) => {
-                            if let Some(agent) = self.agents.get_mut(&new_agent_id) {
-                                agent.restore_checkpoint_id = Some(restore_checkpoint_id);
-                                if let Err(e) =
-                                    AgentStore::save(self.store.as_ref(), agent).await
-                                {
-                                    tracing::error!(%e, %new_agent_id, "failed to save restore checkpoint");
-                                }
+                } => match self.spawn(objective_id, content, dir, None).await {
+                    Ok(new_agent_id) => {
+                        if let Some(agent) = self.agents.get_mut(&new_agent_id) {
+                            agent.restore_checkpoint_id = Some(restore_checkpoint_id);
+                            if let Err(e) = AgentStore::save(self.store.as_ref(), agent).await {
+                                tracing::error!(%e, %new_agent_id, "failed to save restore checkpoint");
                             }
-                            Ok(())
                         }
-                        Err(e) => Err(e),
+                        Ok(())
                     }
-                }
+                    Err(e) => Err(e),
+                },
             };
 
             if let Err(e) = result {
@@ -248,7 +244,8 @@ impl Orchestrator {
 
         self.connectors
             .insert(agent_id, TaskConnectorKind::ClaudeCode(connector));
-        self.process_handles.insert(agent_id, process_handle.clone());
+        self.process_handles
+            .insert(agent_id, process_handle.clone());
 
         let cmd_tx = self.cmd_tx.clone();
         let watcher_handle = process_handle;
@@ -256,10 +253,7 @@ impl Orchestrator {
             let result = watcher_handle.wait().await;
             let success = result.is_ok();
             let _ = cmd_tx
-                .send(OrchestratorCommand::AgentExited {
-                    agent_id,
-                    success,
-                })
+                .send(OrchestratorCommand::AgentExited { agent_id, success })
                 .await;
         });
 
