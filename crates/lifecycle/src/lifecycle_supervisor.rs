@@ -14,6 +14,29 @@ use tokio::sync::{broadcast, mpsc};
 use crate::supervisor::RestartTracker;
 use crate::token_tracker::TokenTracker;
 
+/// Compose the spawn-time prompt for an agent.
+///
+/// Substitutes the placeholders `{{agent_id}}`, `{{objective_id}}`, and
+/// `{{mcp_endpoint}}` in `template`, then appends a `# Your Task` section
+/// containing `objective_content`. Lives here (rather than in
+/// `bin/src/orchestrator.rs`) so the supervisor can re-use it when seeding
+/// a respawned session.
+#[must_use]
+pub fn compose_next_prompt(
+    template: &str,
+    agent_id: AgentId,
+    objective_id: ObjectiveId,
+    mcp_endpoint: &str,
+    objective_content: &str,
+) -> String {
+    let protocol = template
+        .replace("{{agent_id}}", &agent_id.to_string())
+        .replace("{{objective_id}}", &objective_id.to_string())
+        .replace("{{mcp_endpoint}}", mcp_endpoint);
+
+    format!("{protocol}\n\n---\n\n# Your Task\n\n{objective_content}")
+}
+
 pub struct LifecycleSupervisor {
     token_trackers: HashMap<AgentId, TokenTracker>,
     restart_trackers: HashMap<ObjectiveId, RestartTracker>,
@@ -57,22 +80,28 @@ impl LifecycleSupervisor {
         tracker.report(used, remaining);
 
         if tracker.should_force_kill() {
-            let _ = self
+            if let Err(e) = self
                 .cmd_tx
                 .send(OrchestratorCommand::TokenThreshold {
                     agent_id,
                     directive: Directive::Abort,
                 })
-                .await;
+                .await
+            {
+                tracing::error!(%agent_id, %e, "failed to dispatch Abort directive");
+            }
         } else if tracker.should_prepare_reset() {
             tracker.mark_drain_started();
-            let _ = self
+            if let Err(e) = self
                 .cmd_tx
                 .send(OrchestratorCommand::TokenThreshold {
                     agent_id,
                     directive: Directive::PrepareReset,
                 })
-                .await;
+                .await
+            {
+                tracing::error!(%agent_id, %e, "failed to dispatch PrepareReset directive");
+            }
         }
     }
 
@@ -91,9 +120,8 @@ impl LifecycleSupervisor {
             }
         };
 
-        let checkpoint_id = match agent.checkpoint_id {
-            Some(id) => id,
-            None => return,
+        let Some(checkpoint_id) = agent.checkpoint_id else {
+            return;
         };
 
         let tracker = self
@@ -112,15 +140,18 @@ impl LifecycleSupervisor {
 
         let content = agent.injected_message.unwrap_or_default();
 
-        let _ = self
+        if let Err(e) = self
             .cmd_tx
-            .send(OrchestratorCommand::Respawn {
+            .send(OrchestratorCommand::Spawn {
                 objective_id: agent.objective_id,
                 content,
                 dir: agent.directory,
-                restore_checkpoint_id: checkpoint_id,
+                restore_checkpoint_id: Some(checkpoint_id),
             })
-            .await;
+            .await
+        {
+            tracing::error!(%agent_id, %e, "failed to dispatch respawn");
+        }
     }
 
     pub async fn handle_agent_session_ready(&mut self, agent_id: AgentId) {
@@ -176,6 +207,36 @@ mod tests {
     use nephila_core::id::{AgentId, CheckpointId};
     use nephila_core::store::AgentStore;
 
+    #[test]
+    fn compose_next_prompt_interpolates_placeholders() {
+        let agent_id = AgentId::new();
+        let objective_id = ObjectiveId::new();
+        let result = compose_next_prompt(
+            "Agent {{agent_id}} on {{objective_id}} at {{mcp_endpoint}}",
+            agent_id,
+            objective_id,
+            "http://localhost:8080/mcp",
+            "do the thing",
+        );
+        assert!(result.contains(&agent_id.to_string()));
+        assert!(result.contains(&objective_id.to_string()));
+        assert!(result.contains("http://localhost:8080/mcp"));
+        assert!(result.contains("do the thing"));
+    }
+
+    #[test]
+    fn compose_next_prompt_appends_task_section() {
+        let result = compose_next_prompt(
+            "template",
+            AgentId::new(),
+            ObjectiveId::new(),
+            "http://localhost/mcp",
+            "my task",
+        );
+        assert!(result.contains("# Your Task"));
+        assert!(result.ends_with("my task"));
+    }
+
     fn test_lifecycle_config() -> LifecycleConfig {
         LifecycleConfig {
             context_threshold_pct: 80,
@@ -228,7 +289,7 @@ mod tests {
         SupervisionConfig {
             default_strategy: "one_for_one".into(),
             max_restarts: 5,
-            restart_window_secs: 60,
+            restart_window_secs: 600,
             max_agent_depth: 3,
         }
     }
@@ -353,15 +414,15 @@ mod tests {
 
         let cmd = cmd_rx.try_recv().expect("should have sent respawn");
         match cmd {
-            OrchestratorCommand::Respawn {
+            OrchestratorCommand::Spawn {
                 objective_id: oid,
-                restore_checkpoint_id: cpid,
+                restore_checkpoint_id: Some(cpid),
                 ..
             } => {
                 assert_eq!(oid, objective_id);
                 assert_eq!(cpid, checkpoint_id);
             }
-            other => panic!("expected Respawn, got {other:?}"),
+            other => panic!("expected Spawn(restore_checkpoint_id=Some), got {other:?}"),
         }
     }
 
@@ -506,7 +567,6 @@ mod tests {
 
         event_tx.send(BusEvent::Shutdown).unwrap();
         supervisor.run().await;
-        // If we reach here, the run loop correctly exited on Shutdown
     }
 
     #[tokio::test]

@@ -10,6 +10,7 @@ members = [
     "crates/tui",
     "bin",
 ]
+default-members = ["bin"]
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
@@ -93,7 +94,28 @@ strum = { version = "0.28", features = ["derive"] }
 
 # System
 libc = "0.2"
+nix = { version = "0.30", default-features = false, features = ["signal", "fs"] }
+
+# Claude protocol types (default-features=false drops sync/async clients;
+# the actual public submodules `io` and `protocol` come from the `types` feature).
+claude-codes = { version = "2.1.117", default-features = false, features = ["types"] }
+
+# Test fixtures / helpers
+tempfile = "3"
 
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Hashing
+blake3 = "1"
+
+# Concurrent collections / streams
+dashmap = "6"
+futures = "0.3"
+
+# Benchmarks
+criterion = "0.7"
+
+# Property-based testing
+proptest = "1"

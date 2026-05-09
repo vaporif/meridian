@@ -1,9 +1,23 @@
 use crate::directive::Directive;
 use crate::id::{AgentId, CheckpointId, ObjectiveId};
+use crate::session_event::SessionId;
 use chrono::{DateTime, Utc};
 use nephila_eventsourcing::aggregate::EventSourced;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+
+/// Persisted, non-volatile slice of `SessionConfig` — fields needed to
+/// re-spawn the session after an orchestrator restart. The volatile parts
+/// (`store`, `blob_reader`, `crash_fallback_tx`) are reattached from the
+/// running orchestrator at resume time; only the inputs the operator
+/// originally configured live here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentConfigSnapshot {
+    pub working_dir: PathBuf,
+    pub mcp_endpoint: String,
+    pub permission_mode: String,
+    pub claude_binary: PathBuf,
+}
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::Display, strum::EnumString,
@@ -72,6 +86,10 @@ pub struct Agent {
     pub id: AgentId,
     pub state: AgentState,
     pub directive: Directive,
+    /// Stringified UUID of the underlying claude session.
+    /// `AgentEvent::AgentSessionAssigned { session_id: SessionId, .. }`
+    /// writes to this field via the reducer. Stored as `Option<String>` for
+    /// SQL-storage continuity with earlier schemas.
     pub session_id: Option<String>,
     pub directory: PathBuf,
     pub objective_id: ObjectiveId,
@@ -80,6 +98,11 @@ pub struct Agent {
     pub origin: SpawnOrigin,
     pub children: Vec<AgentId>,
     pub injected_message: Option<String>,
+    /// Persisted snapshot of the non-volatile `SessionConfig` fields.
+    /// `cfg_from(agent)` rebuilds a `SessionConfig` for `ClaudeCodeSession::resume`
+    /// using these values; agents that predate the snapshot event fall back
+    /// to defaults sourced from CLI args (with a warn log).
+    pub last_config_snapshot: Option<AgentConfigSnapshot>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -138,6 +161,44 @@ pub enum AgentEvent {
         tokens_used: u64,
         threshold: u64,
     },
+    /// The orchestrator/registry has bound a `claude` session id to this
+    /// agent. Reducer sets `agent.session_id = Some(session_id.to_string())`.
+    AgentSessionAssigned {
+        agent_id: AgentId,
+        session_id: SessionId,
+        ts: DateTime<Utc>,
+    },
+    /// Persisted snapshot of the non-volatile `SessionConfig` fields,
+    /// emitted on agent configure / spawn so `cfg_from(agent)` can rebuild
+    /// a `SessionConfig` after an orchestrator restart without re-asking
+    /// the operator.
+    AgentConfigSnapshotted {
+        agent_id: AgentId,
+        snapshot: AgentConfigSnapshot,
+        ts: DateTime<Utc>,
+    },
+}
+
+impl AgentEvent {
+    /// Stable kebab-case kind discriminator used as the
+    /// `EventEnvelope::event_type` when persisting `AgentEvent`s through
+    /// `DomainEventStore`.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::StateChanged { .. } => "state_changed",
+            Self::DirectiveChanged { .. } => "directive_changed",
+            Self::CheckpointIdSet { .. } => "checkpoint_id_set",
+            Self::SessionReady { .. } => "session_ready",
+            Self::AgentSpawned { .. } => "agent_spawned",
+            Self::AgentKilled { .. } => "agent_killed",
+            Self::HitlRequested { .. } => "hitl_requested",
+            Self::HitlResolved { .. } => "hitl_resolved",
+            Self::TokenThresholdReached { .. } => "token_threshold_reached",
+            Self::AgentSessionAssigned { .. } => "agent_session_assigned",
+            Self::AgentConfigSnapshotted { .. } => "agent_config_snapshotted",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -169,6 +230,7 @@ impl Agent {
             origin,
             children: Vec::new(),
             injected_message,
+            last_config_snapshot: None,
             created_at: now,
             updated_at: now,
         }
@@ -194,138 +256,24 @@ impl Agent {
             }]);
         }
 
-        let mut events = Vec::new();
+        // Kill and Fail are valid from any non-terminal state; the rest are
+        // state-specific.
+        let (new_state, directive) = match (self.state, &cmd) {
+            (AgentState::Starting, AgentCommand::Activate) => (AgentState::Active, None),
 
-        match (self.state, &cmd) {
-            // Starting
-            (AgentState::Starting, AgentCommand::Activate) => {
-                events.push(AgentEvent::StateChanged {
-                    agent_id: self.id,
-                    old_state: self.state,
-                    new_state: AgentState::Active,
-                });
-            }
-            (AgentState::Starting, AgentCommand::Kill) => {
-                events.push(AgentEvent::StateChanged {
-                    agent_id: self.id,
-                    old_state: self.state,
-                    new_state: AgentState::Exited,
-                });
-                events.push(AgentEvent::DirectiveChanged {
-                    agent_id: self.id,
-                    directive: Directive::Abort,
-                });
-            }
-            (AgentState::Starting, AgentCommand::Fail { .. }) => {
-                events.push(AgentEvent::StateChanged {
-                    agent_id: self.id,
-                    old_state: self.state,
-                    new_state: AgentState::Failed,
-                });
-            }
-
-            // Active
             (AgentState::Active, AgentCommand::Pause) => {
-                events.push(AgentEvent::StateChanged {
-                    agent_id: self.id,
-                    old_state: self.state,
-                    new_state: AgentState::Paused,
-                });
-                events.push(AgentEvent::DirectiveChanged {
-                    agent_id: self.id,
-                    directive: Directive::Pause,
-                });
+                (AgentState::Paused, Some(Directive::Pause))
             }
-            (AgentState::Active, AgentCommand::Kill) => {
-                events.push(AgentEvent::StateChanged {
-                    agent_id: self.id,
-                    old_state: self.state,
-                    new_state: AgentState::Exited,
-                });
-                events.push(AgentEvent::DirectiveChanged {
-                    agent_id: self.id,
-                    directive: Directive::Abort,
-                });
-            }
-            (AgentState::Active, AgentCommand::StartSuspending) => {
-                events.push(AgentEvent::StateChanged {
-                    agent_id: self.id,
-                    old_state: self.state,
-                    new_state: AgentState::Suspending,
-                });
-            }
-            (AgentState::Active, AgentCommand::Complete) => {
-                events.push(AgentEvent::StateChanged {
-                    agent_id: self.id,
-                    old_state: self.state,
-                    new_state: AgentState::Completed,
-                });
-            }
-            (AgentState::Active, AgentCommand::Fail { .. }) => {
-                events.push(AgentEvent::StateChanged {
-                    agent_id: self.id,
-                    old_state: self.state,
-                    new_state: AgentState::Failed,
-                });
-            }
+            (AgentState::Active, AgentCommand::StartSuspending) => (AgentState::Suspending, None),
+            (AgentState::Active, AgentCommand::Complete) => (AgentState::Completed, None),
 
-            // Paused
             (AgentState::Paused, AgentCommand::Resume) => {
-                events.push(AgentEvent::StateChanged {
-                    agent_id: self.id,
-                    old_state: self.state,
-                    new_state: AgentState::Active,
-                });
-                events.push(AgentEvent::DirectiveChanged {
-                    agent_id: self.id,
-                    directive: Directive::Continue,
-                });
+                (AgentState::Active, Some(Directive::Continue))
             }
-            (AgentState::Paused, AgentCommand::Kill) => {
-                events.push(AgentEvent::StateChanged {
-                    agent_id: self.id,
-                    old_state: self.state,
-                    new_state: AgentState::Exited,
-                });
-                events.push(AgentEvent::DirectiveChanged {
-                    agent_id: self.id,
-                    directive: Directive::Abort,
-                });
-            }
-            (AgentState::Paused, AgentCommand::StartSuspending) => {
-                events.push(AgentEvent::StateChanged {
-                    agent_id: self.id,
-                    old_state: self.state,
-                    new_state: AgentState::Suspending,
-                });
-            }
-            (AgentState::Paused, AgentCommand::Fail { .. }) => {
-                events.push(AgentEvent::StateChanged {
-                    agent_id: self.id,
-                    old_state: self.state,
-                    new_state: AgentState::Failed,
-                });
-            }
+            (AgentState::Paused, AgentCommand::StartSuspending) => (AgentState::Suspending, None),
 
-            // Suspending
-            (AgentState::Suspending, AgentCommand::Kill) => {
-                events.push(AgentEvent::StateChanged {
-                    agent_id: self.id,
-                    old_state: self.state,
-                    new_state: AgentState::Exited,
-                });
-                events.push(AgentEvent::DirectiveChanged {
-                    agent_id: self.id,
-                    directive: Directive::Abort,
-                });
-            }
-            (AgentState::Suspending, AgentCommand::Fail { .. }) => {
-                events.push(AgentEvent::StateChanged {
-                    agent_id: self.id,
-                    old_state: self.state,
-                    new_state: AgentState::Failed,
-                });
-            }
+            (_, AgentCommand::Kill) => (AgentState::Exited, Some(Directive::Abort)),
+            (_, AgentCommand::Fail { .. }) => (AgentState::Failed, None),
 
             _ => {
                 return Err(TransitionError::InvalidTransition {
@@ -333,8 +281,19 @@ impl Agent {
                     command: format!("{cmd:?}"),
                 });
             }
-        }
+        };
 
+        let mut events = vec![AgentEvent::StateChanged {
+            agent_id: self.id,
+            old_state: self.state,
+            new_state,
+        }];
+        if let Some(directive) = directive {
+            events.push(AgentEvent::DirectiveChanged {
+                agent_id: self.id,
+                directive,
+            });
+        }
         Ok(events)
     }
 
@@ -352,6 +311,14 @@ impl Agent {
             }
             AgentEvent::SessionReady { session_id, .. } => {
                 self.session_id = Some(session_id.clone());
+                self.updated_at = Utc::now();
+            }
+            AgentEvent::AgentSessionAssigned { session_id, .. } => {
+                self.session_id = Some(session_id.to_string());
+                self.updated_at = Utc::now();
+            }
+            AgentEvent::AgentConfigSnapshotted { snapshot, .. } => {
+                self.last_config_snapshot = Some(snapshot.clone());
                 self.updated_at = Utc::now();
             }
             AgentEvent::AgentSpawned { .. }
@@ -398,6 +365,7 @@ impl EventSourced for Agent {
             origin: SpawnOrigin::Operator,
             children: Vec::new(),
             injected_message: None,
+            last_config_snapshot: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

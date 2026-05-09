@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use crate::server::{NephilaMcpServer, nephila_err, parse_agent_id};
 use nephila_core::channel::{merge_channels, validate_channels};
 use nephila_core::checkpoint::{ChannelEntry, CheckpointNode, L2Chunk};
-use nephila_core::event::BusEvent;
 use nephila_core::id::CheckpointId;
 use nephila_core::store::{AgentStore, CheckpointStore, InterruptStore};
 
@@ -60,15 +59,12 @@ impl AsyncTool<NephilaMcpServer> for GetSessionCheckpointTool {
                 .map(|n| n.id),
         };
 
-        let checkpoint_id = match checkpoint_id {
-            Some(id) => id,
-            None => {
-                return Ok(GetSessionCheckpointOutput {
-                    found: false,
-                    channels: None,
-                    interrupt: None,
-                });
-            }
+        let Some(checkpoint_id) = checkpoint_id else {
+            return Ok(GetSessionCheckpointOutput {
+                found: false,
+                channels: None,
+                interrupt: None,
+            });
         };
 
         let ancestry = service
@@ -89,23 +85,19 @@ impl AsyncTool<NephilaMcpServer> for GetSessionCheckpointTool {
         let channels_value = serde_json::to_value(&merged)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
-        let interrupt = if let Some(last) = ancestry.last() {
-            if last.interrupt.is_some() {
-                let pending = service
-                    .sqlite
-                    .get_pending(agent_id)
-                    .await
-                    .map_err(nephila_err)?;
-                pending.map(|req| {
+        let interrupt = if ancestry.last().is_some_and(|last| last.interrupt.is_some()) {
+            service
+                .sqlite
+                .get_pending(agent_id)
+                .await
+                .map_err(nephila_err)?
+                .map(|req| {
                     serde_json::json!({
                         "type": req.interrupt_type,
                         "payload": req.payload,
                         "response": req.response,
                     })
                 })
-            } else {
-                None
-            }
         } else {
             None
         };
@@ -202,21 +194,13 @@ impl AsyncTool<NephilaMcpServer> for SerializeAndPersistTool {
             .map_err(nephila_err)?;
 
         let agent = service.sqlite.get(agent_id).await.map_err(nephila_err)?;
-        if agent
-            .map(|a| a.restore_checkpoint_id.is_some())
-            .unwrap_or(false)
-        {
+        if agent.is_some_and(|a| a.restore_checkpoint_id.is_some()) {
             service
                 .sqlite
                 .set_restore_checkpoint(agent_id, None)
                 .await
                 .map_err(nephila_err)?;
         }
-
-        let _ = service.event_tx.send(BusEvent::CheckpointSaved {
-            agent_id,
-            checkpoint_id,
-        });
 
         Ok(SerializeAndPersistOutput {
             success: true,

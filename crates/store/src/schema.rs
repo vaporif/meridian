@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS agents (
     source_checkpoint_id TEXT,
     injected_message TEXT,
     session_id TEXT,
+    last_config_snapshot TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -98,6 +99,12 @@ CREATE TABLE IF NOT EXISTS aggregate_snapshots (
     PRIMARY KEY (aggregate_type, aggregate_id, sequence)
 );
 
+CREATE TABLE IF NOT EXISTS blobs (
+    hash TEXT PRIMARY KEY,
+    payload BLOB NOT NULL,
+    original_len INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS spans (
     span_id TEXT PRIMARY KEY,
     trace_id TEXT NOT NULL,
@@ -145,13 +152,58 @@ pub fn register_sqlite_vec() {
 
 pub fn init_db(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute_batch(SCHEMA)?;
+    apply_post_create_migrations(conn)?;
     Ok(())
+}
+
+/// Idempotent migrations applied after `CREATE TABLE IF NOT EXISTS`.
+///
+/// New columns added in later slices land here so existing databases pick
+/// them up without requiring a full rebuild. SQLite's `ALTER TABLE ... ADD
+/// COLUMN` errors with `duplicate column name` if the column already exists;
+/// we swallow that specific error so the migration is idempotent.
+fn apply_post_create_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
+    // agents.last_config_snapshot — JSON-encoded `AgentConfigSnapshot`,
+    // populated by `AgentEvent::AgentConfigSnapshotted` reducer projections.
+    add_column_if_missing(conn, "agents", "last_config_snapshot", "TEXT")?;
+    Ok(())
+}
+
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    column_type: &str,
+) -> Result<(), rusqlite::Error> {
+    let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {column_type}");
+    match conn.execute(&sql, []) {
+        Ok(_) => Ok(()),
+        Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
+            if msg.contains("duplicate column name") =>
+        {
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
 }
 
 pub fn init_vec_tables(conn: &Connection, dimension: usize) -> Result<(), rusqlite::Error> {
     conn.execute_batch(&format!(
         "CREATE VIRTUAL TABLE IF NOT EXISTS vec_search_entries USING vec0(embedding float[{dimension}]);"
     ))?;
+    Ok(())
+}
+
+/// Apply per-connection tuning pragmas. Safe to call on file-backed and
+/// in-memory connections; mmap/wal pragmas are no-ops on `:memory:`.
+pub(crate) fn apply_tuning_pragmas(conn: &Connection) -> Result<(), rusqlite::Error> {
+    // 256MB mmap covers the multi-GB event log working set without syscalls.
+    conn.pragma_update(None, "mmap_size", 268_435_456_i64)?;
+    // Negative cache_size = KiB; -65536 = 64MB page cache for backfill scans.
+    conn.pragma_update(None, "cache_size", -65_536_i64)?;
+    conn.pragma_update(None, "temp_store", "MEMORY")?;
+    conn.pragma_update(None, "wal_autocheckpoint", 1000_i64)?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
     Ok(())
 }
 
