@@ -5,7 +5,7 @@
 //!
 //! Uses the `FORCE_COMMIT_FAILURE` test seam (gated on
 //! `cfg(any(test, feature = "test-seam"))`) to inject a one-shot commit
-//! failure after row INSERTs but before the durable commit — semantically
+//! failure after row inserts but before the durable commit — semantically
 //! identical to a real disk-full / SQLITE_BUSY error from the cache's
 //! perspective.
 
@@ -49,7 +49,7 @@ async fn cache_rolls_back_on_commit_failure() {
     assert_eq!(seqs, vec![1, 2, 3]);
 
     // Force the next append to fail at the commit step. The writer thread
-    // will have INSERTed rows into the in-flight transaction, then bail
+    // will have inserted rows into the in-flight transaction, then bail
     // before committing — the rollback is implicit (the rusqlite
     // `Transaction` Drop impl rolls back on non-commit drop).
     FORCE_COMMIT_FAILURE.store(true, Ordering::SeqCst);

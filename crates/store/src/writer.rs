@@ -4,7 +4,7 @@
 //! an arbitrary `FnOnce`. This lets the writer thread own the lazy
 //! `next_sequence` cache directly — keyed off
 //! `(aggregate_type, aggregate_id)` — so `append_batch` can stamp sequences
-//! inside the same SQLite transaction as the row INSERTs.
+//! inside the same SQLite transaction as the row inserts.
 //!
 //! Generic execution still works through `WriterCmd::Generic`, which the
 //! older stores (agent CRUD, checkpoint CRUD, etc.) continue to use via
@@ -317,7 +317,7 @@ fn handle_append(
     }
 
     // Test seam: simulate a commit failure to exercise the cache-rollback
-    // path. The seam fires AFTER all per-row INSERTs but BEFORE the durable
+    // path. The seam fires AFTER all per-row inserts but BEFORE the durable
     // `tx.commit()`, so the failure is indistinguishable from a real disk /
     // WAL commit error from the perspective of `next_sequence`.
     #[cfg(any(test, feature = "test-seam"))]
@@ -338,7 +338,7 @@ fn handle_append(
 }
 
 /// Test seam: forces the next `handle_append` invocation to abort with a
-/// `Storage("forced commit failure")` after staging row INSERTs but before
+/// `Storage("forced commit failure")` after staging row inserts but before
 /// the durable `tx.commit()`. Single-shot — auto-resets on use.
 #[cfg(any(test, feature = "test-seam"))]
 pub static FORCE_COMMIT_FAILURE: std::sync::atomic::AtomicBool =

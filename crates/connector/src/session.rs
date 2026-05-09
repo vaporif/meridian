@@ -111,8 +111,23 @@ struct Turn {
 }
 
 type StderrRing = Arc<ParkingMutex<VecDeque<String>>>;
-type OpenTurn = Arc<ParkingMutex<Option<TurnId>>>;
+type OpenTurn = Arc<ParkingMutex<TurnState>>;
 type ToolNames = Arc<ParkingMutex<HashMap<String, String>>>;
+
+/// Two-phase tracking of the in-flight turn so the reader can emit
+/// `TurnAborted` if the child crashes between `stdin.write_all` and the
+/// `*PromptDelivered` persist.
+///
+/// `pending` is set BEFORE write so a crash during the write→persist window
+/// still yields a turn id for `handle_terminal`. `open` is set AFTER
+/// `*PromptDelivered` is persisted so reader-side `TurnCompleted` (driven by
+/// claude's `Result` frame) only fires once subscribers have seen the
+/// matching `*PromptDelivered`.
+#[derive(Default)]
+struct TurnState {
+    pending: Option<TurnId>,
+    open: Option<TurnId>,
+}
 
 pub struct ClaudeCodeSession {
     session_id: Uuid,
@@ -362,7 +377,7 @@ impl ClaudeCodeSession {
 
         let stderr_ring: StderrRing =
             Arc::new(ParkingMutex::new(VecDeque::with_capacity(STDERR_RING_CAP)));
-        let open_turn: OpenTurn = Arc::new(ParkingMutex::new(None));
+        let open_turn: OpenTurn = Arc::new(ParkingMutex::new(TurnState::default()));
         let tool_names: ToolNames = Arc::new(ParkingMutex::new(HashMap::new()));
         let shutting_down = Arc::new(AtomicBool::new(false));
 
@@ -915,7 +930,7 @@ async fn process_frame(
             }
 
             let stop_reason = r.stop_reason.unwrap_or_else(|| "end_turn".into());
-            let turn_id = open_turn.lock().take();
+            let turn_id = open_turn.lock().open.take();
 
             if let Some(turn_id) = turn_id {
                 events.push(SessionEvent::TurnCompleted {
@@ -1066,7 +1081,12 @@ async fn handle_terminal(
     }
 
     let mut events = Vec::new();
-    let open = open_turn.lock().take();
+    let open = {
+        let mut g = open_turn.lock();
+        // Prefer `open` (post-Delivered); fall back to `pending` so a crash
+        // in the write→persist window still emits TurnAborted.
+        g.open.take().or_else(|| g.pending.take())
+    };
     if let Some(turn_id) = open {
         events.push(SessionEvent::TurnAborted {
             turn_id,
@@ -1081,7 +1101,7 @@ async fn handle_terminal(
             format!("stdout read error: {e}\n--- stderr tail ---\n{tail}")
         }
         TerminalCause::ParseError(e) => {
-            format!("unparseable frame: {e}\n--- stderr tail ---\n{tail}")
+            format!("unparsable frame: {e}\n--- stderr tail ---\n{tail}")
         }
     };
     events.push(SessionEvent::SessionCrashed {
@@ -1153,9 +1173,16 @@ async fn writer_task(
         };
         bytes.push(b'\n');
 
+        // Set `pending` BEFORE write so handle_terminal can recover the turn
+        // id if the child crashes during the write→Delivered-persist window.
+        // Cleared on every failure path below; promoted to `open` only after
+        // Delivered is persisted.
+        open_turn.lock().pending = Some(turn.turn_id);
+
         match stdin.write_all(&bytes).await {
             Ok(()) => {
                 if let Err(e) = stdin.flush().await {
+                    open_turn.lock().pending = None;
                     let failed = SessionEvent::PromptDeliveryFailed {
                         turn_id: turn.turn_id,
                         reason: format!("stdin flush: {e}"),
@@ -1165,11 +1192,11 @@ async fn writer_task(
                     continue;
                 }
                 // ORDERING INVARIANT: emit `*PromptDelivered` *before*
-                // publishing `open_turn`. The reader can only emit
+                // publishing `open_turn.open`. The reader can only emit
                 // `TurnCompleted` after a `Result` frame from claude, which
                 // claude can only send for a turn it has already received —
                 // i.e. one for which we successfully wrote to its stdin.
-                // Publishing `open_turn` first opens a tiny window where the
+                // Publishing `open` first opens a tiny window where the
                 // reader could race ahead and emit `TurnCompleted` before
                 // subscribers see `*PromptDelivered`, violating the contract
                 // "every `*PromptQueued{turn_id}` is followed by exactly one
@@ -1187,9 +1214,14 @@ async fn writer_task(
                 if let Err(e) = append_one(&store, session_id, &delivered).await {
                     tracing::error!(error = %e, "failed to persist *PromptDelivered");
                 }
-                *open_turn.lock() = Some(turn.turn_id);
+                {
+                    let mut g = open_turn.lock();
+                    g.open = Some(turn.turn_id);
+                    g.pending = None;
+                }
             }
             Err(e) => {
+                open_turn.lock().pending = None;
                 let failed = SessionEvent::PromptDeliveryFailed {
                     turn_id: turn.turn_id,
                     reason: format!("stdin write: {e}"),
