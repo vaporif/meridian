@@ -28,7 +28,7 @@ Two shapes were on the table:
 | Option | Pros | Cons |
 | --- | --- | --- |
 | **Option 1** — change `sequence: u64` to `Option<u64>` filled by the store | Compile-time guarantee that callers can't pre-populate | Touches every existing `EventEnvelope` construction site (Agent flows, tests) — bigger diff; ergonomic regression on reads (every consumer unwraps) |
-| **Option 2** — keep `sequence: u64`, document "stamped by store; caller passes 0" | Smaller diff; tests stay readable; reads stay ergonomic | Easy to mis-set — relies on convention plus a writer-side overwrite contract |
+| **Option 2** — keep `sequence: u64`, document "stamped by store; caller passes 0" | Smaller diff; tests stay readable; reads stay ergonomic | Easy to misset — relies on convention plus a writer-side overwrite contract |
 
 ## Decision
 
@@ -49,7 +49,7 @@ Two guards keep the contract honest:
    pre-set cannot land without breaking the test.
 
 The combination — debug assert plus release-build contract test — covers
-mis-use during development (loud failure) and the upgrade path (a stale caller
+misuse during development (loud failure) and the upgrade path (a stale caller
 that still pre-stamps gets its value silently corrected, never silently
 honored).
 
