@@ -71,7 +71,7 @@ rusqlite = { version = "0.39", features = ["bundled", "vtab"] }
 sqlite-vec = "0.1"
 
 # HTTP / MCP
-rmcp = { version = "1.3", features = ["server", "macros", "transport-streamable-http-server"] }
+rmcp = { version = "1.7", features = ["server", "macros", "transport-streamable-http-server"] }
 axum = "0.8"
 schemars = "1.2"
 
@@ -94,11 +94,11 @@ strum = { version = "0.28", features = ["derive"] }
 
 # System
 libc = "0.2"
-nix = { version = "0.30", default-features = false, features = ["signal", "fs"] }
+nix = { version = "0.31", default-features = false, features = ["signal", "fs"] }
 
 # Claude protocol types (default-features=false drops sync/async clients;
 # the actual public submodules `io` and `protocol` come from the `types` feature).
-claude-codes = { version = "2.1.117", default-features = false, features = ["types"] }
+claude-codes = { version = "2.1.150", default-features = false, features = ["types"] }
 
 # Test fixtures / helpers
 tempfile = "3"
@@ -115,7 +115,7 @@ dashmap = "6"
 futures = "0.3"
 
 # Benchmarks
-criterion = "0.7"
+criterion = "0.8"
 
 # Property-based testing
 proptest = "1"
