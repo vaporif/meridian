@@ -94,7 +94,7 @@ strum = { version = "0.28", features = ["derive"] }
 
 # System
 libc = "0.2"
-nix = { version = "0.30", default-features = false, features = ["signal", "fs"] }
+nix = { version = "0.31", default-features = false, features = ["signal", "fs"] }
 
 # Claude protocol types (default-features=false drops sync/async clients;
 # the actual public submodules `io` and `protocol` come from the `types` feature).
@@ -115,7 +115,7 @@ dashmap = "6"
 futures = "0.3"
 
 # Benchmarks
-criterion = "0.7"
+criterion = "0.8"
 
 # Property-based testing
 proptest = "1"
